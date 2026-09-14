@@ -76,6 +76,8 @@ Panel {
   readonly property bool notifyWan: boolSetting("notifyWan", true)
   readonly property bool notifyNewClient: boolSetting("notifyNewClient", true)
   readonly property bool notifyLogin: boolSetting("notifyLogin", true)
+  readonly property int historyDays: intSetting("historyDays", 7, 1, 365)
+  readonly property string historyDir: String(setting("historyDir", "") || "")
 
   // ------------------------------------------------------------------- data
   readonly property string scriptPath: Qt.resolvedUrl("collect.py").toString().replace(/^file:\/\//, "")
@@ -90,7 +92,11 @@ Panel {
   property var _seenAlerts: null
   property bool alertFlash: false
   property var history: []
+  property int historyStep: 30
   property int chartRange: 3600
+  // A new range needs different data from the collector (raw samples up to
+  // 24 h, aggregated buckets beyond); fetch it right away.
+  onChartRangeChanged: if (opened) refresh()
 
   readonly property var router: snap && snap.router ? snap.router : null
   readonly property var wan: snap && snap.wan ? snap.wan : null
@@ -199,7 +205,10 @@ Panel {
     loaded = true
     lastSampleMs = Date.now()
     lastError = doc.error ? String(doc.error) : ""
-    if (doc.history && doc.history.length !== undefined) history = doc.history
+    if (doc.history && doc.history.length !== undefined) {
+      history = doc.history
+      historyStep = Math.max(30, Number(doc.historyStep) || 30)
+    }
     noteAlerts(doc)
     syncRows()
     if (_restoringScroll) Qt.callLater(restoreScroll)
@@ -271,7 +280,9 @@ Panel {
 
   function collectorArgs() {
     var args = [pythonBin, "-I", scriptPath]
-    if (opened) args.push("--history")
+    if (opened) { args.push("--history"); args.push(String(chartRange)) }
+    args.push("--history-days"); args.push(String(historyDays))
+    if (historyDir !== "") { args.push("--history-dir"); args.push(historyDir) }
     if (opened && showLog) args.push("--log")
     if (!showClients) args.push("--no-clients")
     if (boolSetting("demo", false)) args.push("--demo")
@@ -928,7 +939,7 @@ Panel {
       if (!c) { prev = null; continue }
       if (prev) {
         var dt = t - prev.t
-        if (dt > 0 && dt < 900) {
+        if (dt > 0 && dt < Math.max(900, historyStep * 3)) {
           var drx = c[0] - prev.rx, dtx = c[1] - prev.tx
           if (drx >= 0 && dtx >= 0 && t >= start) {
             var idx = Math.floor((t - start) / rangeSec * buckets)
@@ -949,7 +960,12 @@ Panel {
     }
     return { rx: rx, tx: tx, max: max, start: start, end: now, bytesRx: bytesRx, bytesTx: bytesTx, n: n, firstTs: firstTs }
   }
-  readonly property var rangeOptions: [{ sec: 3600, label: "1h" }, { sec: 21600, label: "6h" }, { sec: 86400, label: "24h" }]
+  readonly property var rangeOptions: {
+    var out = [{ sec: 3600, label: "1h" }, { sec: 21600, label: "6h" }, { sec: 86400, label: "24h" }]
+    if (historyDays >= 7) out.push({ sec: 7 * 86400, label: "7d" })
+    if (historyDays >= 30) out.push({ sec: 30 * 86400, label: "30d" })
+    return out
+  }
   function rangeLabel(sec) {
     for (var i = 0; i < rangeOptions.length; i++) if (rangeOptions[i].sec === sec) return rangeOptions[i].label
     return Math.round(sec / 3600) + "h"
@@ -1007,6 +1023,8 @@ Panel {
         else if (t === "1") root.chartRange = 3600
         else if (t === "2") root.chartRange = 21600
         else if (t === "3") root.chartRange = 86400
+        else if (t === "4" && root.historyDays >= 7) root.chartRange = 7 * 86400
+        else if (t === "5" && root.historyDays >= 30) root.chartRange = 30 * 86400
       }
 
       ScrollView {
@@ -1338,7 +1356,7 @@ Panel {
             Text {
               textFormat: Text.PlainText
               width: parent.width
-              text: "j/k move · enter/→ expand · 1/2/3 chart range · c copy · r refresh · d devices · g full log · e/w expand/collapse all · esc"
+              text: "j/k move · enter/→ expand · 1-" + root.rangeOptions.length + " chart range · c copy · r refresh · d devices · g full log · e/w expand/collapse all · esc"
               color: root.dimmer
               font.family: root.fontFamily
               font.pixelSize: Style.font.caption
@@ -1755,7 +1773,7 @@ Panel {
         width: parent.width
         text: {
           var sr = rowChart.series
-          if (!sr || sr.n === 0) return "History is recorded while the bar runs (every 30 s, up to 24 h). No samples for this range yet."
+          if (!sr || sr.n === 0) return "History is recorded while the bar runs (every 30 s, 5-minute averages kept " + root.historyDays + " days). No samples for this range yet."
           var t = "Last " + root.rangeLabel(root.chartRange) + ": ↓ " + root.fmtBytes(sr.bytesRx) + " ↑ " + root.fmtBytes(sr.bytesTx) + " · peak " + root.fmtRate(sr.max)
           if (sr.firstTs > sr.start + 120) t += " · data since " + root.fmtClock(sr.firstTs)
           return t

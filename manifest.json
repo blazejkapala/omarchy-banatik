@@ -2,10 +2,10 @@
   "schemaVersion": 1,
   "id": "banan.banatik",
   "name": "Banatik",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "author": "banan",
   "license": "MIT",
-  "description": "Banatik — your MikroTik router in the Omarchy bar. WAN link and public IP, RouterOS version and pending firmware, CPU and memory, Wi-Fi radios and every connected client with its signal, DHCP clients, ZeroTier and WireGuard / Back To Home peers, active logins, firewall counters, live throughput with 24 h charts and the router log — read over the REST API with a read-only user and a pinned certificate. Alerts when the internet link drops, the public IP changes, a new device joins or someone logs into the router.",
+  "description": "Banatik — your MikroTik router in the Omarchy bar. WAN link and public IP, RouterOS version and pending firmware, CPU and memory, Wi-Fi radios and every connected client with its signal, DHCP clients, ZeroTier and WireGuard / Back To Home peers, active logins, firewall counters, live throughput with charts up to 30 days and the router log — read over the REST API with a read-only user and a pinned certificate. Alerts when the internet link drops, the public IP changes, a new device joins or someone logs into the router.",
   "kinds": [
     "bar-widget"
   ],
@@ -14,7 +14,7 @@
   },
   "barWidget": {
     "displayName": "Banatik",
-    "description": "MikroTik router status: WAN, Wi-Fi clients, DHCP, tunnels, logins, log and 24 h charts over REST. Click for the panel.",
+    "description": "MikroTik router status: WAN, Wi-Fi clients, DHCP, tunnels, logins, log and traffic charts up to 30 days over REST. Click for the panel.",
     "category": "Network",
     "allowMultiple": false,
     "defaultSection": "right",
@@ -30,6 +30,8 @@
       "notifyWan": true,
       "notifyNewClient": true,
       "notifyLogin": true,
+      "historyDays": 7,
+      "historyDir": "",
       "demo": false
     },
     "schema": [
@@ -104,6 +106,21 @@
         "type": "boolean",
         "label": "Notify when someone logs into the router from an address not seen before",
         "defaultValue": true
+      },
+      {
+        "key": "historyDays",
+        "type": "integer",
+        "label": "Keep traffic history for this many days (5-minute averages; raw 30 s samples are kept 48 h). 7 and 30 unlock the 7d / 30d chart ranges",
+        "min": 1,
+        "max": 365,
+        "step": 1,
+        "defaultValue": 7
+      },
+      {
+        "key": "historyDir",
+        "type": "string",
+        "label": "Directory for the history database (empty = ~/.cache/omarchy-banatik). Must exist, be yours, mode 0700, not a symlink",
+        "defaultValue": ""
       },
       {
         "key": "demo",

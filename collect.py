@@ -28,6 +28,7 @@ import json
 import os
 import re
 import socket
+import sqlite3
 import ssl
 import stat
 import sys
@@ -39,9 +40,10 @@ CONFIG_DIR = os.path.join(os.environ.get("XDG_CONFIG_HOME", os.path.join(HOME, "
 CREDENTIALS = os.path.join(CONFIG_DIR, "credentials")
 CACHE_DIR = os.path.join(os.environ.get("XDG_CACHE_HOME", os.path.join(HOME, ".cache")), "omarchy-banatik")
 STATE_FILE = os.path.join(CACHE_DIR, "state.json")
-HISTORY_FILE = os.path.join(CACHE_DIR, "history.jsonl")
+HISTORY_FILE = os.path.join(CACHE_DIR, "history.jsonl")   # pre-0.2 format, imported once into the database
+HISTORY_DB = "history.sqlite"
 
-VERSION = "0.1.0"
+VERSION = "0.2.0"
 MAX_STR = 300
 MAX_LIST = 400
 CACHE_MAX = 4 * 1024 * 1024
@@ -52,9 +54,13 @@ CONNECT_TIMEOUT = 3.0
 REQUEST_TIMEOUT = 4.0
 DEADLINE = 9.0                  # whole run, so the widget never waits longer
 
-HISTORY_STEP = 30
-HISTORY_KEEP = 24 * 3600
-HISTORY_MAX_LINES = int(HISTORY_KEEP / HISTORY_STEP) + 50
+HISTORY_STEP = 30               # raw sample interval
+RAW_KEEP = 48 * 3600            # raw samples: two days, enough for the 24 h chart
+AGG_STEP = 300                  # aggregate buckets: 5 minutes, kept HISTORY_DAYS
+HISTORY_DAYS_DEFAULT = 7
+HISTORY_DAYS_MAX = 365
+HISTORY_MAX_LINES = int(RAW_KEEP / HISTORY_STEP) + 50   # longest history list in the document
+RANGE_MAX = HISTORY_DAYS_MAX * 86400
 ALERT_KEEP = 24 * 3600
 ALERT_MAX = 50
 WAN_LOG_KEEP = 7 * 24 * 3600
@@ -63,7 +69,7 @@ CLIENT_FORGET = 30 * 24 * 3600  # a MAC not seen for a month is "new" again
 CLIENT_NEW_FOR = 3600
 LOG_LINES = 40
 
-OPTS = {"log": False, "history": False, "demo": False, "clients": True}
+OPTS = {"log": False, "history": 0, "demo": False, "clients": True, "history_days": HISTORY_DAYS_DEFAULT, "history_dir": ""}
 WARNINGS = []
 STARTED = time.time()
 
@@ -807,49 +813,148 @@ def collect_log(r):
     return out
 
 
-def record_history(interfaces, now):
-    """Append one line of cumulative counters every HISTORY_STEP seconds, keep
-    24 h. Returns the history when requested (panel open), else None."""
-    ensure_cache_dir()
-    lines = []
+# --------------------------------------------------------------------------- traffic history (SQLite)
+#
+# Two tables in one private database file:
+#   samples(ts, iface, rx, tx)         raw cumulative counters every 30 s, kept 48 h
+#   agg(bucket, iface, rx, tx, rxpeak, txpeak, n)   bytes moved per 5-minute bucket, kept historyDays
+# The panel asks for one range (--history SECONDS): up to 24 h it gets the raw
+# samples, beyond that it gets the buckets re-rolled to 5 or 30 minutes and
+# turned back into cumulative counters, so the chart code has one input shape.
+
+def history_dir():
+    """The user may point historyDir somewhere else (a synced folder, a bigger
+    disk). Accepted only if it is an absolute path to an existing directory
+    that is ours, private (0700) and not a symlink; otherwise the cache dir."""
+    want = OPTS.get("history_dir") or ""
+    if not want:
+        ensure_cache_dir()
+        return CACHE_DIR
+    if not os.path.isabs(want) or len(want) > 512 or any(ord(c) < 32 for c in want):
+        warn("historyDir must be an absolute path; using the cache directory")
+        ensure_cache_dir()
+        return CACHE_DIR
+    try:
+        st = os.lstat(want)
+    except OSError:
+        warn("historyDir %s does not exist; using the cache directory" % clip(want, 80))
+        ensure_cache_dir()
+        return CACHE_DIR
+    if not stat.S_ISDIR(st.st_mode) or st.st_uid != os.getuid() or st.st_mode & 0o077:
+        warn("historyDir %s must be a directory you own with mode 0700, no symlink; using the cache directory" % clip(want, 80))
+        ensure_cache_dir()
+        return CACHE_DIR
+    return want
+
+
+def open_history():
+    directory = history_dir()
+    path = os.path.join(directory, HISTORY_DB)
+    try:
+        st = os.lstat(path)
+        if not stat.S_ISREG(st.st_mode) or st.st_uid != os.getuid():
+            raise OSError("%s is not a regular file owned by this user" % path)
+    except FileNotFoundError:
+        pass
+    con = sqlite3.connect(path, timeout=2.0, isolation_level=None)
+    con.execute("PRAGMA journal_mode=TRUNCATE")
+    con.execute("PRAGMA synchronous=NORMAL")
+    con.execute("CREATE TABLE IF NOT EXISTS samples (ts REAL NOT NULL, iface TEXT NOT NULL, rx INTEGER NOT NULL, tx INTEGER NOT NULL, PRIMARY KEY (iface, ts))")
+    con.execute("CREATE INDEX IF NOT EXISTS samples_ts ON samples (ts)")
+    con.execute("CREATE TABLE IF NOT EXISTS agg (bucket INTEGER NOT NULL, iface TEXT NOT NULL, rx INTEGER NOT NULL, tx INTEGER NOT NULL, "
+                "rxpeak REAL NOT NULL, txpeak REAL NOT NULL, n INTEGER NOT NULL, PRIMARY KEY (iface, bucket))")
+    con.execute("CREATE INDEX IF NOT EXISTS agg_bucket ON agg (bucket)")
+    try:
+        os.chmod(path, 0o600)
+    except OSError:
+        pass
+    return con
+
+
+def import_jsonl(con, now):
+    """One-time import of the pre-0.2 history.jsonl, then the file is removed."""
     try:
         raw = read_private_file(HISTORY_FILE, CACHE_MAX)
-        lines = raw.decode("utf-8", "replace").splitlines()
     except OSError:
-        lines = []
-    last_ts = 0.0
-    if lines:
-        try:
-            last_ts = float(json.loads(lines[-1])[0])
-        except (ValueError, IndexError, TypeError):
-            last_ts = 0.0
-    changed = False
-    if now - last_ts >= HISTORY_STEP - 1:
-        # Bridge slaves are folded into the bridge row, except Wi-Fi radios,
-        # which get their own row and chart.
-        counters = {i["name"]: [i["rx"], i["tx"]] for i in interfaces if i.get("running") and (not i.get("slave") or i.get("kind") == "wifi")}
-        lines.append(json.dumps([round(now, 1), counters], separators=(",", ":")))
-        changed = True
-    if len(lines) > HISTORY_MAX_LINES:
-        lines = lines[-HISTORY_MAX_LINES:]
-        changed = True
-    if changed:
-        try:
-            write_private_file(HISTORY_FILE, ("\n".join(lines) + "\n").encode())
-        except OSError:
-            pass
-    if not OPTS["history"]:
-        return None
-    out = []
-    cutoff = now - HISTORY_KEEP
-    for line in lines:
+        return
+    rows = []
+    for line in raw.decode("utf-8", "replace").splitlines():
         try:
             entry = json.loads(line)
-            if isinstance(entry, list) and len(entry) == 2 and float(entry[0]) >= cutoff:
-                out.append(entry)
-        except (ValueError, TypeError):
+            ts = float(entry[0])
+            for name, c in entry[1].items():
+                rows.append((ts, str(name)[:64], int(c[0]), int(c[1])))
+        except (ValueError, TypeError, IndexError, AttributeError):
             continue
-    return out
+    con.execute("BEGIN")
+    con.executemany("INSERT OR IGNORE INTO samples (ts, iface, rx, tx) VALUES (?, ?, ?, ?)", rows)
+    # Rebuild the aggregates from the imported samples.
+    prev = {}
+    for ts, name, rx, tx in sorted(rows):
+        p = prev.get(name)
+        if p and 0 < ts - p[0] < 900 and rx >= p[1] and tx >= p[2]:
+            add_agg(con, name, ts, rx - p[1], tx - p[2], ts - p[0])
+        prev[name] = (ts, rx, tx)
+    con.execute("COMMIT")
+    try:
+        os.unlink(HISTORY_FILE)
+    except OSError:
+        pass
+
+
+def add_agg(con, name, ts, drx, dtx, dt):
+    bucket = int(ts // AGG_STEP) * AGG_STEP
+    con.execute("INSERT INTO agg (bucket, iface, rx, tx, rxpeak, txpeak, n) VALUES (?, ?, ?, ?, ?, ?, 1) "
+                "ON CONFLICT(iface, bucket) DO UPDATE SET rx = rx + excluded.rx, tx = tx + excluded.tx, "
+                "rxpeak = MAX(rxpeak, excluded.rxpeak), txpeak = MAX(txpeak, excluded.txpeak), n = n + 1",
+                (bucket, name, int(drx), int(dtx), drx / dt, dtx / dt))
+
+
+def record_history(interfaces, now):
+    """Store one sample per HISTORY_STEP, roll it into the 5-minute aggregates,
+    prune, and return the history for the requested range (or None)."""
+    con = open_history()
+    try:
+        import_jsonl(con, now)
+        # Bridge slaves are folded into the bridge row, except Wi-Fi radios,
+        # which get their own row and chart.
+        counters = {i["name"]: (i["rx"], i["tx"]) for i in interfaces if i.get("running") and (not i.get("slave") or i.get("kind") == "wifi")}
+        last = {}
+        for name, ts, rx, tx in con.execute("SELECT s.iface, s.ts, s.rx, s.tx FROM samples s JOIN (SELECT iface, MAX(ts) AS ts FROM samples GROUP BY iface) m ON m.iface = s.iface AND m.ts = s.ts"):
+            last[name] = (ts, rx, tx)
+        newest = max([v[0] for v in last.values()] or [0.0])
+        if now - newest >= HISTORY_STEP - 1:
+            con.execute("BEGIN")
+            for name, (rx, tx) in counters.items():
+                con.execute("INSERT OR REPLACE INTO samples (ts, iface, rx, tx) VALUES (?, ?, ?, ?)", (round(now, 1), name, int(rx), int(tx)))
+                p = last.get(name)
+                if p and 0 < now - p[0] < 900 and rx >= p[1] and tx >= p[2]:
+                    add_agg(con, name, now, rx - p[1], tx - p[2], now - p[0])
+            days = max(1, min(HISTORY_DAYS_MAX, int(OPTS["history_days"])))
+            con.execute("DELETE FROM samples WHERE ts < ?", (now - RAW_KEEP,))
+            con.execute("DELETE FROM agg WHERE bucket < ?", (now - days * 86400,))
+            con.execute("COMMIT")
+        rng = int(OPTS["history"])
+        if rng <= 0:
+            return None, HISTORY_STEP
+        rng = min(rng, RANGE_MAX)
+        if rng <= 86400:
+            out = {}
+            for ts, name, rx, tx in con.execute("SELECT ts, iface, rx, tx FROM samples WHERE ts >= ? ORDER BY ts", (now - rng,)):
+                out.setdefault(ts, {})[name] = [rx, tx]
+            return [[ts, row] for ts, row in sorted(out.items())], HISTORY_STEP
+        step = AGG_STEP if rng <= 7 * 86400 else 1800
+        cum = {}
+        out = {}
+        for bucket, name, rx, tx in con.execute("SELECT (bucket / ?) * ?, iface, SUM(rx), SUM(tx) FROM agg WHERE bucket >= ? GROUP BY 1, 2 ORDER BY 1", (step, step, now - rng)):
+            c = cum.setdefault(name, [0, 0])
+            c[0] += rx
+            c[1] += tx
+            # Counter at the END of the bucket; the chart's delta over one step is this bucket's bytes.
+            out.setdefault(float(bucket + step), {})[name] = [c[0], c[1]]
+        return [[ts, row] for ts, row in sorted(out.items())], step
+    finally:
+        con.close()
 
 
 def update_state(now, wan, public_ip, clients, wifi_clients, sessions, router):
@@ -1071,11 +1176,21 @@ def main():
     args = sys.argv[1:]
     if args and args[0] == "--fingerprint":
         sys.exit(cmd_fingerprint())
-    for a in args:
+    i = 0
+    while i < len(args):
+        a = args[i]
+        nxt = args[i + 1] if i + 1 < len(args) else None
         if a == "--log":
             OPTS["log"] = True
-        elif a == "--history":
-            OPTS["history"] = True
+        elif a == "--history" and nxt is not None and nxt.isdigit():
+            OPTS["history"] = max(0, min(RANGE_MAX, int(nxt)))
+            i += 1
+        elif a == "--history-days" and nxt is not None and nxt.isdigit():
+            OPTS["history_days"] = max(1, min(HISTORY_DAYS_MAX, int(nxt)))
+            i += 1
+        elif a == "--history-dir" and nxt is not None:
+            OPTS["history_dir"] = nxt[:512]
+            i += 1
         elif a == "--demo":
             OPTS["demo"] = True
         elif a == "--no-clients":
@@ -1083,6 +1198,8 @@ def main():
         else:
             sys.stderr.write("unknown option %s\n" % clip(a, 40))
             sys.exit(2)
+        i += 1
+    os.umask(0o077)   # every file this program creates is private
     now = time.time()
     if OPTS["demo"]:
         doc = demo_output(now)
@@ -1097,29 +1214,35 @@ def main():
             jitter = 0.7 + 0.6 * ((i * 31 + seed * 7) % 11) / 10.0
             return base * wave * burst * jitter
 
-        step_now = now / 30.0
-        first = int(step_now) - 2880
+        rng = int(OPTS["history"]) or 3600
+        step = 30 if rng <= 86400 else (AGG_STEP if rng <= 7 * 86400 else 1800)
+        points = int(rng / step)
+        step_now = now / step
+        first = int(step_now) - points
         # Accumulate from a day boundary, not from the window start, so the
         # counters only ever grow between two refreshes (rates stay positive).
-        origin = (int(step_now) // 2880 - 1) * 2880
+        per_day = int(86400 / step)
+        origin = (int(step_now) // per_day - 1) * per_day
         charted = [f for f in doc["interfaces"] if f["running"] and (not f["slave"] or f["kind"] == "wifi")]
-        counters = {f["name"]: [f["rx"] - 5760 * 30 * 1_200_000, f["tx"] - 5760 * 30 * 350_000] for f in charted}
+        counters = {f["name"]: [f["rx"] - 2 * 86400 * 1_200_000, f["tx"] - 2 * 86400 * 350_000] for f in charted}
         seeds = {f["name"]: (sum(ord(c) for c in f["name"]) % 5) + 1 for f in charted}
         history = []
-        for i in range(origin, int(step_now) + 1):
+        for i in range(min(origin, first), int(step_now) + 1):
             for f in charted:
                 n = f["name"]
-                counters[n][0] += int(30 * demo_rate(seeds[n], i, True))
-                counters[n][1] += int(30 * demo_rate(seeds[n], i, False))
+                counters[n][0] += int(step * demo_rate(seeds[n], int(i * step / 30), True))
+                counters[n][1] += int(step * demo_rate(seeds[n], int(i * step / 30), False))
             if first <= i < int(step_now):
-                history.append([i * 30.0, {n: [c[0], c[1]] for n, c in counters.items()}])
+                history.append([i * float(step), {n: [c[0], c[1]] for n, c in counters.items()}])
         frac = step_now - int(step_now)
         for f in charted:
             n = f["name"]
-            f["rx"] = counters[n][0] + int(frac * 30 * demo_rate(seeds[n], int(step_now), True))
-            f["tx"] = counters[n][1] + int(frac * 30 * demo_rate(seeds[n], int(step_now), False))
+            f["rx"] = counters[n][0] + int(frac * step * demo_rate(seeds[n], int(step_now * step / 30), True))
+            f["tx"] = counters[n][1] + int(frac * step * demo_rate(seeds[n], int(step_now * step / 30), False))
         if OPTS["history"]:
             doc["history"] = history
+            doc["historyStep"] = step
+        doc["historyDays"] = OPTS["history_days"]
         json.dump(bound(doc), sys.stdout, ensure_ascii=False)
         sys.stdout.write("\n")
         return
@@ -1219,11 +1342,11 @@ def main():
     log = collect_log(r) if OPTS["log"] else []
     r.close()
 
-    history = None
+    history, history_step = None, HISTORY_STEP
     try:
-        history = record_history(interfaces, now)
-    except OSError as e:
-        warn("history: %s" % e)
+        history, history_step = record_history(interfaces, now)
+    except (OSError, sqlite3.Error) as e:
+        warn("history: %s" % clip(str(e), 120))
     wan_log, alerts, first_seen = [], [], {}
     try:
         wan_log, alerts, first_seen = update_state(now, wan, cloud["publicIp"], clients, wifi["clients"], sessions, router)
@@ -1243,7 +1366,7 @@ def main():
         "clientsBound": sum(1 for c in clients if c["status"] == "bound"),
         "zerotier": zerotier, "wireguard": wireguard, "sessions": sessions, "firewall": firewall,
         "log": log, "alerts": alerts, "wanLog": wan_log, "warnings": WARNINGS, "setup": None,
-        "history": history, "historyStep": HISTORY_STEP,
+        "history": history, "historyStep": history_step, "historyDays": OPTS["history_days"], "historyDir": history_dir() if OPTS["history_dir"] else "",
         "stats": {"requests": r.requests, "bytes": r.bytes},
     }
     json.dump(bound(output), sys.stdout, ensure_ascii=False)

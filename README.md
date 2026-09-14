@@ -137,8 +137,8 @@ packets, errors and drops, last link up/down, and
 - for WireGuard: each peer with endpoint, last handshake, traffic and allowed
   addresses. Peers whose name or comment says Back To Home are labelled so.
 
-History is sampled every 30 s while the bar runs and kept for 24 h in
-`~/.cache/omarchy-banatik/history.jsonl`.
+History is sampled every 30 s while the bar runs. See [Traffic history](#traffic-history)
+for what is kept and for how long.
 
 **Devices.** Every DHCP lease, online first: name (host name, comment or MAC),
 address, wired or Wi-Fi with SSID and signal, static or dynamic, when it was
@@ -168,13 +168,36 @@ panel for 24 h and sent once as a desktop notification:
 The first run on a machine records and says nothing. Alerts older than ten
 minutes never notify (catching up after a suspend is not news).
 
+## Traffic history
+
+Every refresh stores the cumulative byte counters of the charted interfaces in
+an SQLite database, `history.sqlite` in `~/.cache/omarchy-banatik/` (or in
+`historyDir`). Two tables:
+
+- **raw samples** every 30 s, kept 48 hours. They feed the 1 h / 6 h / 24 h charts.
+- **5-minute buckets** with bytes moved, peak rate and sample count, kept
+  `historyDays` days (default 7, up to 365). They feed the 7 d and 30 d
+  charts, which appear once `historyDays` is at least 7 or 30. On the 30 d
+  chart the buckets are re-rolled to 30 minutes so the panel never receives
+  more than ~2 000 points.
+
+A day of raw samples is about 1 MB, a year of 5-minute buckets for seven
+interfaces about 40 MB. Pruning happens on every refresh. Counter resets
+(router reboot) and gaps (this machine was off) show as breaks, not spikes.
+
+`historyDir` lets you keep the database elsewhere, e.g. on a bigger disk. The
+collector accepts it only if it is an absolute path to an existing directory
+that you own, with mode 0700 and not a symlink; otherwise it warns in the panel
+and uses the cache directory. Pre-0.2 `history.jsonl` files are imported once
+and removed.
+
 ## Keyboard and mouse
 
 | Key | Action |
 |---|---|
 | `j` / `k`, arrows | move the cursor |
 | `enter`, `→` / `←` | expand / collapse the interface under the cursor; toggle the device list on its header |
-| `1` / `2` / `3` | chart range 1 h / 6 h / 24 h |
+| `1` … `5` | chart range 1 h / 6 h / 24 h / 7 d / 30 d (the last two need `historyDays`) |
 | `c` | copy the cursor row's address |
 | `r` | refresh now |
 | `d` | show / hide the device list |
@@ -200,6 +223,8 @@ for devices, first address for interfaces).
 | `notifyWan` | true | link / address / reboot notifications |
 | `notifyNewClient` | true | new-device notifications |
 | `notifyLogin` | true | new-login notifications |
+| `historyDays` | 7 | days of 5-minute traffic history to keep (1–365) |
+| `historyDir` | `""` | directory for `history.sqlite`; empty = `~/.cache/omarchy-banatik` |
 | `demo` | false | invented router, for screenshots |
 
 `omarchy bar set banan.banatik showLabel true` changes a setting from the
@@ -209,14 +234,15 @@ terminal.
 
 - `Panel.qml` – bar widget and panel.
 - `collect.py` – the collector. `python3 collect.py` prints one JSON document;
-  `--log`, `--history`, `--no-clients`, `--demo` mirror the settings;
-  `--fingerprint` shows the router's certificate for pinning.
+  `--log`, `--history SECONDS`, `--history-days N`, `--history-dir PATH`,
+  `--no-clients`, `--demo` mirror the settings; `--fingerprint` shows the
+  router's certificate for pinning.
 - `BanatikIcon.qml` – the bar icon, drawn on a Canvas so it follows the theme.
 - `~/.config/banatik/credentials` – `HOST`, `USER`, `PASS`, `FINGERPRINT`,
   optional `PORT`. Must be a regular file owned by you with mode 0600; the
   collector refuses anything else.
 - `~/.cache/omarchy-banatik/` – `state.json` (what was seen last time, for
-  alerts) and `history.jsonl` (24 h of interface counters). Private (0700), no
+  alerts) and `history.sqlite` (traffic history). Private (0700), no
   credentials.
 
 ## Security notes
