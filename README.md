@@ -245,6 +245,26 @@ terminal.
   alerts) and `history.sqlite` (traffic history). Private (0700), no
   credentials.
 
+## Manage
+
+```
+omarchy plugin remove banan.banatik      # take it off the bar and delete the plugin
+rm -rf ~/.cache/omarchy-banatik          # history database and alert state
+rm -rf ~/.config/banatik                 # the credentials file
+```
+
+On the router, if you no longer want the read-only account and the certificate:
+
+```
+/user remove banatik
+/user group remove banatik
+/ip service set www-ssl disabled=yes certificate=none
+/certificate remove [find name~"banatik"]
+```
+
+The plugin never touches `~/.config/omarchy/shell.json` itself; the bar
+settings live there under the `banan.banatik` entry, managed by `omarchy bar`.
+
 ## Security notes
 
 For the reader who wants to check rather than trust:
