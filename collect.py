@@ -1414,6 +1414,10 @@ def main():
         return
     except OSError as e:
         msg = str(e)
+        if "UNEXPECTED_EOF" in msg or "Connection refused" in msg or "ECONNREFUSED" in msg:
+            msg = "the router closed the connection on port %d — is www-ssl enabled and allowed from this network (its address= setting, and the user's)? (%s)" % (creds["port"], clip(msg, 80))
+        elif "timed out" in msg.lower():
+            msg = "no answer from %s:%d within %.0f s — not in this network, or a firewall in between (%s)" % (creds["host"], creds["port"], CONNECT_TIMEOUT, clip(msg, 60))
         if "fingerprint mismatch" in msg:
             doc = setup_document("%s: TLS certificate does not match FINGERPRINT: %s" % (creds["label"], msg))
             doc.update({"routers": routers, "profile": router_info, "setupIsProfile": True})

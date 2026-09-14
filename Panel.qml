@@ -517,7 +517,7 @@ Panel {
     return parts.join(" · ")
   }
   readonly property string routerDetail: {
-    if (!router) return setup ? "credentials needed" : (lastError ? lastError : "")
+    if (!router) return setup ? "credentials needed" : (lastError ? "unreachable" : "")
     var parts = []
     if (router.uptimeS !== null && router.uptimeS !== undefined) parts.push("up " + fmtDuration(router.uptimeS))
     if (router.cpuLoad !== undefined) parts.push("cpu " + router.cpuLoad + " %")
