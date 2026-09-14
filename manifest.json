@@ -1,0 +1,116 @@
+{
+  "schemaVersion": 1,
+  "id": "banan.banatik",
+  "name": "Banatik",
+  "version": "0.1.0",
+  "author": "banan",
+  "license": "MIT",
+  "description": "Banatik — your MikroTik router in the Omarchy bar. WAN link and public IP, RouterOS version and pending firmware, CPU and memory, Wi-Fi radios and every connected client with its signal, DHCP clients, ZeroTier and WireGuard / Back To Home peers, active logins, firewall counters, live throughput with 24 h charts and the router log — read over the REST API with a read-only user and a pinned certificate. Alerts when the internet link drops, the public IP changes, a new device joins or someone logs into the router.",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "Panel.qml"
+  },
+  "barWidget": {
+    "displayName": "Banatik",
+    "description": "MikroTik router status: WAN, Wi-Fi clients, DHCP, tunnels, logins, log and 24 h charts over REST. Click for the panel.",
+    "category": "Network",
+    "allowMultiple": false,
+    "defaultSection": "right",
+    "defaults": {
+      "refreshIntervalSec": 30,
+      "openRefreshIntervalSec": 5,
+      "showLabel": false,
+      "labelStyle": "wan",
+      "showTooltip": false,
+      "iconStyle": "banana",
+      "showClients": true,
+      "showLog": true,
+      "notifyWan": true,
+      "notifyNewClient": true,
+      "notifyLogin": true,
+      "demo": false
+    },
+    "schema": [
+      {
+        "key": "refreshIntervalSec",
+        "type": "integer",
+        "label": "Refresh interval when closed (seconds). Every refresh is one REST login on the router",
+        "min": 5,
+        "max": 600,
+        "step": 1,
+        "defaultValue": 30
+      },
+      {
+        "key": "openRefreshIntervalSec",
+        "type": "integer",
+        "label": "Refresh interval while the panel is open (seconds)",
+        "min": 2,
+        "max": 60,
+        "step": 1,
+        "defaultValue": 5
+      },
+      {
+        "key": "showLabel",
+        "type": "boolean",
+        "label": "Show a short label next to the bar icon",
+        "defaultValue": false
+      },
+      {
+        "key": "labelStyle",
+        "type": "string",
+        "label": "Bar label: wan (download/upload rate), clients (devices online), identity (router name)",
+        "defaultValue": "wan"
+      },
+      {
+        "key": "showTooltip",
+        "type": "boolean",
+        "label": "Show a summary tooltip on hover",
+        "defaultValue": false
+      },
+      {
+        "key": "iconStyle",
+        "type": "string",
+        "label": "Bar icon: banana (drawn), emoji (🍌), glyph (router)",
+        "defaultValue": "banana"
+      },
+      {
+        "key": "showClients",
+        "type": "boolean",
+        "label": "Read the DHCP lease and ARP tables (device list, host names for Wi-Fi clients)",
+        "defaultValue": true
+      },
+      {
+        "key": "showLog",
+        "type": "boolean",
+        "label": "Fetch the router log while the panel is open (last 40 lines, own logins filtered out)",
+        "defaultValue": true
+      },
+      {
+        "key": "notifyWan",
+        "type": "boolean",
+        "label": "Notify when the internet link goes down or comes back, the WAN or public address changes, or the router reboots",
+        "defaultValue": true
+      },
+      {
+        "key": "notifyNewClient",
+        "type": "boolean",
+        "label": "Notify when a device not seen before joins the network (DHCP lease or Wi-Fi association)",
+        "defaultValue": true
+      },
+      {
+        "key": "notifyLogin",
+        "type": "boolean",
+        "label": "Notify when someone logs into the router from an address not seen before",
+        "defaultValue": true
+      },
+      {
+        "key": "demo",
+        "type": "boolean",
+        "label": "Demo mode: show an invented router instead of talking to a real one",
+        "defaultValue": false
+      }
+    ]
+  }
+}
