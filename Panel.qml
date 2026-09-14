@@ -111,6 +111,40 @@ Panel {
   readonly property var alerts: snap && snap.alerts ? snap.alerts : []
   readonly property var wanLog: snap && snap.wanLog ? snap.wanLog : []
   readonly property var setup: snap && snap.setup ? snap.setup : null
+  readonly property var routers: snap && snap.routers ? snap.routers : []
+  readonly property var profile: snap && snap.profile ? snap.profile : null
+  readonly property string routersJson: JSON.stringify(routers)
+  // "" = let the collector decide (its pin or the gateway); a name pins that
+  // router; "auto" clears the pin. Sent with every refresh.
+  property string selectedRouter: ""
+  function selectRouter(name) {
+    if (name === selectedRouter) return
+    selectedRouter = name
+    _prev = null            // rates of one router mean nothing for another
+    _seenAlerts = null      // the first sample of a router never notifies
+    history = []
+    expanded = ({})
+    actionStatus = name === "auto" ? "Router: automatic (gateway of this network)" : "Router: " + name
+    actionStatusTimer.restart()
+    refresh()
+  }
+  function cycleRouter() {
+    if (routers.length < 2) return
+    var idx = -1
+    for (var i = 0; i < routers.length; i++) if (routers[i].current) idx = i
+    selectRouter(routers[(idx + 1) % routers.length].name)
+  }
+  readonly property string profileReason: {
+    if (!profile) return ""
+    switch (String(profile.reason)) {
+      case "pinned": return "chosen by you"
+      case "gateway": return "gateway of this network"
+      case "lan": return "in this network"
+      case "only": return ""
+      case "first": return "no profile matches this network"
+      default: return ""
+    }
+  }
   readonly property var dns: snap && snap.dns ? snap.dns : []
   readonly property bool wanUp: !!(wan && wan.up)
   readonly property bool healthy: loaded && !setup && !lastError && !!router
@@ -283,6 +317,7 @@ Panel {
     if (opened) { args.push("--history"); args.push(String(chartRange)) }
     args.push("--history-days"); args.push(String(historyDays))
     if (historyDir !== "") { args.push("--history-dir"); args.push(historyDir) }
+    if (selectedRouter !== "" && /^[A-Za-z0-9][A-Za-z0-9_.-]{0,31}$/.test(selectedRouter)) { args.push("--router"); args.push(selectedRouter) }
     if (opened && showLog) args.push("--log")
     if (!showClients) args.push("--no-clients")
     if (boolSetting("demo", false)) args.push("--demo")
@@ -699,7 +734,7 @@ Panel {
     if (setup) return "Banatik: not configured — open the panel"
     if (lastError) return "Banatik: " + lastError
     var lines = []
-    lines.push((router && router.identity ? router.identity : "MikroTik") + (routerMeta ? " · " + routerMeta : ""))
+    lines.push((router && router.identity ? router.identity : "MikroTik") + (routerMeta ? " · " + routerMeta : "") + (routers.length > 1 && profile ? "  [" + profile.label + "]" : ""))
     if (routerDetail) lines.push(routerDetail)
     lines.push("Internet: " + wanLine)
     if (cloud && cloud.publicIp) lines.push("Public IP: " + cloud.publicIp)
@@ -1018,6 +1053,7 @@ Panel {
         else if (t === "c") root.copyCursor()
         else if (t === "d") root.showDevices = !root.showDevices
         else if (t === "g") root.logExpanded = !root.logExpanded
+        else if (t === "n") root.cycleRouter()
         else if (t === "e") root.setAllExpanded(true)
         else if (t === "w") root.setAllExpanded(false)
         else if (t === "1") root.chartRange = 3600
@@ -1061,6 +1097,44 @@ Panel {
             detail: root.routerDetail
             foreground: root.foreground
             fontFamily: root.fontFamily
+          }
+
+          // ---------- Router picker (only with several profiles) ----------
+          Flow {
+            visible: root.routers.length > 1
+            width: parent.width
+            spacing: Style.space(6)
+            Text {
+              textFormat: Text.PlainText
+              text: "Router"
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.bodySmall
+              font.bold: true
+              height: implicitHeight + Style.space(4)
+              verticalAlignment: Text.AlignVCenter
+            }
+            Repeater {
+              model: JSON.parse(root.routersJson)
+              delegate: RouterPill {
+                required property var modelData
+                router: modelData
+              }
+            }
+            RouterPill {
+              router: ({ name: "auto", label: "auto", current: false, isGateway: false })
+              isAuto: true
+            }
+            Text {
+              textFormat: Text.PlainText
+              visible: root.profileReason !== ""
+              text: root.profileReason + (root.profile && root.profile.gateway ? " · gateway " + root.profile.gateway : "")
+              color: root.dimmer
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              height: implicitHeight + Style.space(4)
+              verticalAlignment: Text.AlignVCenter
+            }
           }
 
           // ---------- Setup card ----------
@@ -1356,7 +1430,7 @@ Panel {
             Text {
               textFormat: Text.PlainText
               width: parent.width
-              text: "j/k move · enter/→ expand · 1-" + root.rangeOptions.length + " chart range · c copy · r refresh · d devices · g full log · e/w expand/collapse all · esc"
+              text: "j/k move · enter/→ expand · 1-" + root.rangeOptions.length + " chart range · c copy · r refresh · d devices · g full log" + (root.routers.length > 1 ? " · n next router" : "") + " · e/w expand/collapse all · esc"
               color: root.dimmer
               font.family: root.fontFamily
               font.pixelSize: Style.font.caption
@@ -1505,6 +1579,40 @@ Panel {
       acceptedButtons: Qt.RightButton
       z: -1
       onClicked: root.copyText(root.setupCommands, "RouterOS commands")
+    }
+  }
+
+  component RouterPill: BorderSurface {
+    id: rpill
+    property var router: null
+    property bool isAuto: false
+    readonly property bool current: isAuto ? !!(root.profile && !root.profile.pinned) : !!(router && router.current)
+    implicitWidth: rpillLabel.implicitWidth + Style.space(12)
+    implicitHeight: rpillLabel.implicitHeight + Style.space(6)
+    radius: Style.cornerRadius
+    color: current ? root.selectedFill : (rpillMouse.containsMouse ? root.hoverFill : "transparent")
+    borderSpec: Border.controlSpec(current ? "selected" : "normal", root.foreground, Color.accent)
+    Text {
+      textFormat: Text.PlainText
+      id: rpillLabel
+      anchors.centerIn: parent
+      text: rpill.isAuto ? "auto" : ((rpill.router ? rpill.router.label : "") + (rpill.router && rpill.router.isGateway ? "  ⌂" : ""))
+      color: rpill.current ? root.foreground : root.dim
+      font.family: root.fontFamily
+      font.pixelSize: Style.font.caption
+      font.bold: rpill.current
+    }
+    MouseArea {
+      id: rpillMouse
+      anchors.fill: parent
+      hoverEnabled: true
+      cursorShape: Qt.PointingHandCursor
+      onClicked: root.selectRouter(rpill.isAuto ? "auto" : String(rpill.router.name))
+      PanelToolTip {
+        visible: rpillMouse.containsMouse
+        text: rpill.isAuto ? "Pick the router automatically: the gateway of the network you are in" : root.plain((rpill.router ? rpill.router.host : "") + (rpill.router && rpill.router.isGateway ? "\nThis is your default gateway right now" : "") + "\nClick to switch and remember the choice")
+        fontFamily: root.fontFamily
+      }
     }
   }
 

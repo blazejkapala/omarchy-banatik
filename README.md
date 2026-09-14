@@ -87,6 +87,36 @@ before that check passes. `PORT=` is optional (default 443).
 
 Right-click the bar icon (or press `r` in the panel) to refresh.
 
+### Several routers
+
+Instead of the single `credentials` file, put one file per router in
+`~/.config/banatik/routers/` (directory 0700, files 0600). The file name is
+the profile name (letters, digits, `.`, `_`, `-`); the contents are the same
+keys plus two optional ones:
+
+```
+NAME=Home hAP ac3            # label shown in the panel
+HOST=192.168.88.1
+USER=banatik
+PASS='…'
+FINGERPRINT=…
+LAN=192.168.88.0/24          # network(s) this router serves, comma separated
+```
+
+Do steps 1 and 2 on every router (`collect.py --fingerprint <profile>` shows
+that router's certificate). Banatik then picks the router by itself: the one
+whose `HOST` is this machine's default gateway, otherwise one whose `LAN` (or
+host) is a directly attached network, otherwise the first profile. The panel
+shows a row of router pills (`⌂` marks the gateway); click one to switch and
+pin the choice, click `auto` to let Banatik decide again, `n` cycles. Alerts
+and traffic history are kept per router.
+
+A router's `www-ssl` only answers from the networks named in its `address=`
+setting (and the read-only user from its own `address=`), so switching to a
+router you are not connected to only works if you also allow the tunnel
+network you reach it through (a WireGuard or ZeroTier subnet, for instance) in
+both settings.
+
 ### Log noise
 
 RouterOS writes one `user banatik logged in via rest-api` line to its log per

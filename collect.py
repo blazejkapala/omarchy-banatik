@@ -37,11 +37,23 @@ import time
 
 HOME = os.path.expanduser("~")
 CONFIG_DIR = os.path.join(os.environ.get("XDG_CONFIG_HOME", os.path.join(HOME, ".config")), "banatik")
-CREDENTIALS = os.path.join(CONFIG_DIR, "credentials")
+CREDENTIALS = os.path.join(CONFIG_DIR, "credentials")     # single-router form, profile name "default"
+PROFILES_DIR = os.path.join(CONFIG_DIR, "routers")          # one file per router, the file name is the profile name
 CACHE_DIR = os.path.join(os.environ.get("XDG_CACHE_HOME", os.path.join(HOME, ".cache")), "omarchy-banatik")
-STATE_FILE = os.path.join(CACHE_DIR, "state.json")
-HISTORY_FILE = os.path.join(CACHE_DIR, "history.jsonl")   # pre-0.2 format, imported once into the database
-HISTORY_DB = "history.sqlite"
+SELECTED_FILE = os.path.join(CACHE_DIR, "selected.json")    # the router the user pinned by hand, if any
+STATE_FILE = os.path.join(CACHE_DIR, "state.json")          # per profile: state.json for "default", state-<name>.json otherwise
+HISTORY_FILE = os.path.join(CACHE_DIR, "history.jsonl")     # pre-0.2 format, imported once into the database
+HISTORY_DB = "history.sqlite"                                # per profile likewise
+PROFILE_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,31}$")
+
+
+def set_profile_paths(name):
+    """State and history are kept per router so that switching never mixes
+    alerts or charts of two devices."""
+    global STATE_FILE, HISTORY_DB
+    suffix = "" if name == "default" else "-" + name
+    STATE_FILE = os.path.join(CACHE_DIR, "state%s.json" % suffix)
+    HISTORY_DB = "history%s.sqlite" % suffix
 
 VERSION = "0.2.0"
 MAX_STR = 300
@@ -69,7 +81,7 @@ CLIENT_FORGET = 30 * 24 * 3600  # a MAC not seen for a month is "new" again
 CLIENT_NEW_FOR = 3600
 LOG_LINES = 40
 
-OPTS = {"log": False, "history": 0, "demo": False, "clients": True, "history_days": HISTORY_DAYS_DEFAULT, "history_dir": ""}
+OPTS = {"log": False, "history": 0, "demo": False, "clients": True, "history_days": HISTORY_DAYS_DEFAULT, "history_dir": "", "router": None}
 WARNINGS = []
 STARTED = time.time()
 
@@ -252,15 +264,10 @@ class CredentialsError(Exception):
     pass
 
 
-def load_credentials():
+def parse_credentials(raw, name="default"):
     """KEY=VALUE lines. Values may be wrapped in single or double quotes.
-    Returns dict with host, port, user, password, fingerprint - all validated."""
-    try:
-        raw = read_private_file(CREDENTIALS, CRED_MAX, require_0600=True).decode("utf-8", "replace")
-    except FileNotFoundError:
-        raise CredentialsError("no credentials file")
-    except OSError as e:
-        raise CredentialsError(str(e))
+    Returns dict with name, label, host, port, user, password, fingerprint,
+    lan - all validated."""
     values = {}
     for line in raw.splitlines():
         line = line.strip()
@@ -296,7 +303,133 @@ def load_credentials():
         raise CredentialsError("FINGERPRINT is missing; run `collect.py --fingerprint` and pin the value")
     if not FINGERPRINT_RE.match(fingerprint):
         raise CredentialsError("FINGERPRINT must be 64 hex characters (SHA-256 of the certificate)")
-    return {"host": host, "port": port, "user": user, "password": password, "fingerprint": fingerprint}
+    lans = []
+    for item in re.split(r"[,\s]+", values.get("LAN", "")):
+        if not item:
+            continue
+        try:
+            lans.append(ipaddress.ip_network(item, strict=False))
+        except ValueError:
+            raise CredentialsError("LAN must be a list of networks like 192.168.88.0/24")
+    label = values.get("NAME", "").strip()
+    if any(ord(c) < 32 for c in label):
+        raise CredentialsError("NAME contains control characters")
+    return {"name": name, "label": clip(label or name, 48), "host": host, "port": port, "user": user, "password": password,
+            "fingerprint": fingerprint, "lan": lans}
+
+
+def load_profiles():
+    """Every router this machine knows: `credentials` (profile "default") plus
+    one file per router in routers/. Broken files are reported, not fatal.
+    Returns (profiles, problems)."""
+    profiles, problems = [], []
+    try:
+        raw = read_private_file(CREDENTIALS, CRED_MAX, require_0600=True).decode("utf-8", "replace")
+        profiles.append(parse_credentials(raw, "default"))
+    except FileNotFoundError:
+        pass
+    except (OSError, CredentialsError) as e:
+        problems.append("credentials: %s" % e)
+    try:
+        st = os.lstat(PROFILES_DIR)
+        ok_dir = stat.S_ISDIR(st.st_mode) and st.st_uid == os.getuid() and not st.st_mode & 0o077
+        if stat.S_ISDIR(st.st_mode) and not ok_dir:
+            problems.append("routers/ must be a directory you own with mode 0700, no symlink")
+        names = sorted(os.listdir(PROFILES_DIR)) if ok_dir else []
+    except FileNotFoundError:
+        names = []
+    except OSError as e:
+        problems.append("routers/: %s" % e)
+        names = []
+    for entry in names[:32]:
+        if entry.startswith(".") or entry.endswith("~"):
+            continue
+        if not PROFILE_NAME_RE.match(entry) or entry == "default":
+            problems.append("routers/%s: profile names are letters, digits, . _ - (not 'default')" % clip(entry, 40))
+            continue
+        try:
+            raw = read_private_file(os.path.join(PROFILES_DIR, entry), CRED_MAX, require_0600=True).decode("utf-8", "replace")
+            profiles.append(parse_credentials(raw, entry))
+        except (OSError, CredentialsError) as e:
+            problems.append("routers/%s: %s" % (entry, e))
+    return profiles, problems
+
+
+def local_routes():
+    """Default gateway and on-link IPv4 networks of this machine, from
+    /proc/net/route (no subprocess). Returns (gateway or "", [networks])."""
+    gateway, nets = "", []
+    try:
+        with open("/proc/net/route") as f:
+            next(f)
+            for line in f:
+                parts = line.split()
+                if len(parts) < 8:
+                    continue
+                dest, gw, flags, mask = parts[1], parts[2], int(parts[3], 16), parts[7]
+                if not flags & 1:      # RTF_UP
+                    continue
+                d = ipaddress.IPv4Address(int(dest, 16).to_bytes(4, "little"))
+                m = ipaddress.IPv4Address(int(mask, 16).to_bytes(4, "little"))
+                if int(d) == 0 and not gateway:
+                    gateway = str(ipaddress.IPv4Address(int(gw, 16).to_bytes(4, "little")))
+                elif not flags & 2 and int(m) != 0:   # not RTF_GATEWAY: directly attached
+                    nets.append(ipaddress.ip_network("%s/%s" % (d, m), strict=False))
+    except (OSError, ValueError, StopIteration):
+        pass
+    return gateway, nets
+
+
+def load_pinned():
+    data = load_json_file(SELECTED_FILE, {})
+    name = str(data.get("pinned", "") or "")
+    return name if PROFILE_NAME_RE.match(name) or name == "default" else ""
+
+
+def choose_profile(profiles, wanted):
+    """Which router to talk to. `wanted`: a profile name (pin it), "auto"
+    (clear the pin), or None (use the pin if any). Otherwise: the profile
+    whose host is this machine's default gateway, then one whose LAN (or host)
+    is directly attached, then the first. Returns (profile, reason)."""
+    names = {p["name"]: p for p in profiles}
+    pinned = load_pinned()
+    if wanted == "auto":
+        if pinned:
+            save_json_file(SELECTED_FILE, {})
+        pinned = ""
+    elif wanted and wanted in names:
+        if wanted != pinned:
+            save_json_file(SELECTED_FILE, {"pinned": wanted})
+        pinned = wanted
+    elif wanted:
+        warn("no router profile named %s" % clip(wanted, 40))
+    if pinned and pinned in names:
+        return names[pinned], "pinned"
+    gateway, nets = local_routes()
+    if len(profiles) == 1:
+        return profiles[0], "only"
+    for p in profiles:
+        if gateway and p["host"] == gateway:
+            return p, "gateway"
+    for p in profiles:
+        try:
+            host = ipaddress.ip_address(p["host"])
+        except ValueError:
+            host = None
+        if any(host in n for n in nets if host is not None) or any(any(n.subnet_of(l) or l.subnet_of(n) for n in nets) for l in p["lan"]):
+            return p, "lan"
+    return profiles[0], "first"
+
+
+def load_credentials():
+    """Single-profile compatibility wrapper (used by --fingerprint)."""
+    try:
+        raw = read_private_file(CREDENTIALS, CRED_MAX, require_0600=True).decode("utf-8", "replace")
+    except FileNotFoundError:
+        raise CredentialsError("no credentials file")
+    except OSError as e:
+        raise CredentialsError(str(e))
+    return parse_credentials(raw, "default")
 
 
 # --------------------------------------------------------------------------- REST client
@@ -415,13 +548,17 @@ class Router:
             return default
 
 
-def cmd_fingerprint():
-    """`collect.py --fingerprint`: show the certificate the router presents so
-    the user can pin it (trust on first use, done once, by hand)."""
+def cmd_fingerprint(name=""):
+    """`collect.py --fingerprint [PROFILE]`: show the certificate the router
+    presents so the user can pin it (trust on first use, done once, by hand)."""
+    path = CREDENTIALS if not name or name == "default" else os.path.join(PROFILES_DIR, name)
+    if name and name != "default" and not PROFILE_NAME_RE.match(name):
+        sys.stderr.write("profile names are letters, digits, . _ -\n")
+        return 2
     try:
-        raw = read_private_file(CREDENTIALS, CRED_MAX, require_0600=True).decode("utf-8", "replace")
+        raw = read_private_file(path, CRED_MAX, require_0600=True).decode("utf-8", "replace")
     except OSError as e:
-        sys.stderr.write("cannot read %s: %s\n" % (CREDENTIALS, e))
+        sys.stderr.write("cannot read %s: %s\n" % (path, e))
         return 2
     host = port = ""
     for line in raw.splitlines():
@@ -451,7 +588,7 @@ def cmd_fingerprint():
     sys.stdout.write("Certificate presented by %s:%d\n" % (host, port))
     sys.stdout.write("SHA-256 fingerprint: %s\n\n" % fp)
     sys.stdout.write("Compare it with `/certificate print detail` on the router (field `fingerprint`).\n")
-    sys.stdout.write("If it matches, add this line to %s:\n\nFINGERPRINT=%s\n" % (CREDENTIALS, fp))
+    sys.stdout.write("If it matches, add this line to %s:\n\nFINGERPRINT=%s\n" % (path, fp))
     del info
     return 0
 
@@ -1175,7 +1312,7 @@ def setup_document(reason):
 def main():
     args = sys.argv[1:]
     if args and args[0] == "--fingerprint":
-        sys.exit(cmd_fingerprint())
+        sys.exit(cmd_fingerprint(args[1] if len(args) > 1 else ""))
     i = 0
     while i < len(args):
         a = args[i]
@@ -1190,6 +1327,9 @@ def main():
             i += 1
         elif a == "--history-dir" and nxt is not None:
             OPTS["history_dir"] = nxt[:512]
+            i += 1
+        elif a == "--router" and nxt is not None and (nxt == "auto" or nxt == "default" or PROFILE_NAME_RE.match(nxt)):
+            OPTS["router"] = nxt
             i += 1
         elif a == "--demo":
             OPTS["demo"] = True
@@ -1247,27 +1387,41 @@ def main():
         sys.stdout.write("\n")
         return
 
-    try:
-        creds = load_credentials()
-    except CredentialsError as e:
-        json.dump(bound(setup_document(str(e))), sys.stdout, ensure_ascii=False)
+    profiles, problems = load_profiles()
+    for p in problems:
+        warn(p)
+    if not profiles:
+        doc = setup_document(problems[0] if problems else "no credentials file")
+        doc["gateway"] = local_routes()[0]
+        json.dump(bound(doc), sys.stdout, ensure_ascii=False)
         sys.stdout.write("\n")
         return
+    creds, reason = choose_profile(profiles, OPTS["router"])
+    set_profile_paths(creds["name"])
+    gateway = local_routes()[0]
+    routers = [{"name": p["name"], "label": p["label"], "host": p["host"], "current": p is creds,
+                "isGateway": bool(gateway) and p["host"] == gateway} for p in profiles]
+    router_info = {"name": creds["name"], "label": creds["label"], "reason": reason, "gateway": gateway, "pinned": bool(load_pinned())}
 
     r = Router(creds)
     try:
         resource = r.get("system/resource", {}, required=True)
     except PermissionError as e:
-        json.dump(bound(setup_document(str(e))), sys.stdout, ensure_ascii=False)
+        doc = setup_document("%s: %s" % (creds["label"], e))
+        doc.update({"routers": routers, "profile": router_info, "setupIsProfile": True})
+        json.dump(bound(doc), sys.stdout, ensure_ascii=False)
         sys.stdout.write("\n")
         return
     except OSError as e:
         msg = str(e)
         if "fingerprint mismatch" in msg:
-            json.dump(bound(setup_document("TLS certificate does not match FINGERPRINT: " + msg)), sys.stdout, ensure_ascii=False)
+            doc = setup_document("%s: TLS certificate does not match FINGERPRINT: %s" % (creds["label"], msg))
+            doc.update({"routers": routers, "profile": router_info, "setupIsProfile": True})
         else:
-            json.dump(bound({"ts": now, "tookMs": int((time.time() - STARTED) * 1000), "version": VERSION, "error": clip(msg, 200), "host": creds["host"],
-                             "router": None, "wan": None, "interfaces": [], "clients": [], "wifi": {"radios": [], "clients": []}, "alerts": [], "warnings": [], "log": []}), sys.stdout, ensure_ascii=False)
+            doc = {"ts": now, "tookMs": int((time.time() - STARTED) * 1000), "version": VERSION, "error": clip("%s: %s" % (creds["label"], msg), 200), "host": creds["host"],
+                   "routers": routers, "profile": router_info, "router": None, "wan": None, "interfaces": [], "clients": [],
+                   "wifi": {"radios": [], "clients": []}, "alerts": [], "warnings": WARNINGS, "log": []}
+        json.dump(bound(doc), sys.stdout, ensure_ascii=False)
         sys.stdout.write("\n")
         return
     if not isinstance(resource, dict):
@@ -1361,6 +1515,7 @@ def main():
 
     output = {
         "ts": now, "tookMs": int((time.time() - STARTED) * 1000), "version": VERSION, "host": creds["host"],
+        "routers": routers, "profile": router_info,
         "router": router, "wan": wan, "cloud": cloud, "dns": dns_info["servers"], "dnsInfo": dns_info,
         "interfaces": interfaces, "wifi": wifi, "clients": clients,
         "clientsBound": sum(1 for c in clients if c["status"] == "bound"),
