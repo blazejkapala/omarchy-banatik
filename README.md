@@ -270,7 +270,7 @@ settings live there under the `banan.banatik` entry, managed by `omarchy bar`.
 For the reader who wants to check rather than trust:
 
 - **No privileges, no subprocesses.** The collector is pure Python: it opens
-  one TLS connection and prints JSON. There is no `sudo`, no shell, no other
+  one TLS connection and prints JSON. There is no privilege escalation of any kind, no shell, no other
   program started. The panel starts `/usr/bin/python3 -I collect.py`,
   `/usr/bin/wl-copy` (text on stdin) and `/usr/bin/notify-send` (argv only),
   all by absolute path.
