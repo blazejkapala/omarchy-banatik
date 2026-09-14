@@ -585,7 +585,11 @@ Panel {
     lines.push((c.static ? "static lease" : "dynamic lease") + (c.status ? " · " + c.status : "") + (c.expires ? " · expires in " + fmtDuration(c.expires) : ""))
     if (c.lastSeen !== null && c.lastSeen !== undefined) lines.push("last seen " + fmtAge(c.lastSeen) + " ago")
     var w = wifiClientFor(c.mac)
-    if (w) lines.push("Wi-Fi " + w.ssid + " · " + w.signal + " dBm (" + signalWord(w.signal) + ") · " + bandLabel(w.band) + " · ↓ " + fmtBits(w.rxRate) + " ↑ " + fmtBits(w.txRate))
+    if (w) {
+      lines.push("Wi-Fi " + w.ssid + " · " + w.signal + " dBm (" + signalWord(w.signal) + ") · " + bandLabel(w.band) + (w.uptime ? " · connected " + fmtDuration(w.uptime) : ""))
+      lines.push("traffic now ↓ " + fmtRate(w.rxBps) + " ↑ " + fmtRate(w.txBps) + " · total ↓ " + fmtBytes(w.rxBytes) + " ↑ " + fmtBytes(w.txBytes))
+      lines.push("link speed (negotiated, not traffic) ↓ " + fmtBits(w.rxRate) + " ↑ " + fmtBits(w.txRate))
+    }
     lines.push("Click to copy the IP")
     return lines.join("\n")
   }
