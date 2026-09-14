@@ -32,6 +32,7 @@
       "notifyLogin": true,
       "historyDays": 7,
       "historyDir": "",
+      "companionHints": true,
       "demo": false
     },
     "schema": [
@@ -121,6 +122,12 @@
         "type": "string",
         "label": "Directory for the history database (empty = ~/.cache/omarchy-banatik). Must exist, be yours, mode 0700, not a symlink",
         "defaultValue": ""
+      },
+      {
+        "key": "companionHints",
+        "type": "boolean",
+        "label": "When the router carries tunnels, show a line pointing to Bananet (opens it if installed, otherwise copies the install command)",
+        "defaultValue": true
       },
       {
         "key": "demo",

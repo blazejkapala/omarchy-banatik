@@ -155,7 +155,9 @@ is logged in (WinBox, SSH, web) from where and since when.
 
 **Interfaces.** One row per interface that matters: the WAN link, the LAN
 bridge, each Wi-Fi radio, tunnels (ZeroTier, WireGuard, L2TP, …) and any
-standalone ethernet port. Bridge slaves are folded into the bridge. Each row
+standalone ethernet port. Bridge slaves are folded into the bridge; radios
+that are down with nobody on them and disabled interfaces fold into one line
+(`i` unfolds). Each row
 shows the address, a role pill (`INTERNET`, `LAN`), live rates and a sparkline;
 expand it for the full 24 h chart (1 h / 6 h / 24 h) and details: MAC, MTU,
 packets, errors and drops, last link up/down, and
@@ -232,6 +234,9 @@ and removed.
 | `r` | refresh now |
 | `d` | show / hide the device list |
 | `g` | full log / last 12 lines |
+| `n` | next router (with several profiles) |
+| `i` | show / hide down radios without clients and disabled interfaces |
+| `b` | open Bananet (when the hint is shown) |
 | `e` / `w` | expand / collapse all interfaces |
 | `esc` | close |
 
@@ -255,6 +260,7 @@ for devices, first address for interfaces).
 | `notifyLogin` | true | new-login notifications |
 | `historyDays` | 7 | days of 5-minute traffic history to keep (1–365) |
 | `historyDir` | `""` | directory for `history.sqlite`; empty = `~/.cache/omarchy-banatik` |
+| `companionHints` | true | when the router carries tunnels, show a line pointing to Bananet (opens it if installed, otherwise copies `omarchy plugin install banan.bananet`) |
 | `demo` | false | invented router, for screenshots |
 
 `omarchy bar set banan.banatik showLabel true` changes a setting from the

@@ -77,6 +77,7 @@ Panel {
   readonly property bool notifyNewClient: boolSetting("notifyNewClient", true)
   readonly property bool notifyLogin: boolSetting("notifyLogin", true)
   readonly property int historyDays: intSetting("historyDays", 7, 1, 365)
+  readonly property bool companionHints: boolSetting("companionHints", true)
   readonly property string historyDir: String(setting("historyDir", "") || "")
 
   // ------------------------------------------------------------------- data
@@ -112,6 +113,27 @@ Panel {
   readonly property var wanLog: snap && snap.wanLog ? snap.wanLog : []
   readonly property var setup: snap && snap.setup ? snap.setup : null
   readonly property var routers: snap && snap.routers ? snap.routers : []
+  readonly property bool bananetInstalled: !!(snap && snap.companions && snap.companions.bananet)
+  // The router carries tunnels: that is when "where does my laptop's traffic
+  // leave" (Bananet's question) becomes interesting.
+  readonly property bool routerHasTunnels: {
+    if (zerotier && zerotier.networks && zerotier.networks.length) return true
+    if (wireguard && wireguard.interfaces && wireguard.interfaces.length) return true
+    var list = snap && snap.interfaces ? snap.interfaces : []
+    for (var i = 0; i < list.length; i++) if (list[i].kind === "tunnel" && list[i].running) return true
+    return false
+  }
+  readonly property string omarchyShellBin: "/usr/share/omarchy/bin/omarchy-shell"
+  readonly property string bananetInstallCommand: "omarchy plugin install banan.bananet"
+  function openBananet() {
+    if (bananetInstalled) {
+      Quickshell.execDetached([omarchyShellBin, "banan.bananet", "open"])
+      close()
+    } else copyText(bananetInstallCommand, "command")
+  }
+  readonly property string bananetHint: bananetInstalled
+    ? "This router carries tunnels. Bananet shows which link this laptop's traffic actually leaves through — click to open it."
+    : "This router carries tunnels. Bananet (same author) shows which link this laptop's traffic leaves through — click to copy: " + bananetInstallCommand
   readonly property var profile: snap && snap.profile ? snap.profile : null
   readonly property string routersJson: JSON.stringify(routers)
   // "" = let the collector decide (its pin or the gateway); a name pins that
@@ -805,6 +827,23 @@ Panel {
   // ------------------------------------------------------------- row model
   property var expanded: ({})
   property bool showDevices: true
+  property bool showInactiveRadios: false
+  readonly property var inactiveRadios: {
+    var list = snap && snap.interfaces ? snap.interfaces : []
+    var out = []
+    for (var i = 0; i < list.length; i++) if (radioIsIdle(list[i])) out.push(list[i].name)
+    return out
+  }
+  // Folded into one line: radios that are down with nobody on them, and
+  // disabled interfaces (spare tunnels, unused PPP clients).
+  function radioIsIdle(f) {
+    if (!f || f.running) return false
+    if (f.kind === "wifi") {
+      var radio = radioFor(f.name)
+      return !radio || !radio.clients
+    }
+    return !!f.disabled
+  }
   property bool cursorActive: false
   property int cursorIndex: 0
 
@@ -837,8 +876,9 @@ Panel {
     return true
   }
   function ifaceShown(f) {
-    if (f.kind === "wifi") return true                      // radios are bridge slaves but carry the interesting traffic
     if (wan && f.name === wan.iface) return true
+    if (radioIsIdle(f)) return showInactiveRadios
+    if (f.kind === "wifi") return true                      // radios are bridge slaves but carry the interesting traffic
     if (f.slave) return false                               // ethernet ports inside the bridge: the bridge row has their sum
     if (f.kind === "ethernet" && !f.running) return false
     if (wan && wan.pppoeOn && f.name === wan.pppoeOn) return false   // the physical port under PPPoE duplicates the WAN row
@@ -889,6 +929,7 @@ Panel {
     return out
   }
   onShowDevicesChanged: syncRows()
+  onShowInactiveRadiosChanged: syncRows()
 
   function rowAt(idx) {
     if (idx < ifaceRows.length) return { section: "iface", item: ifaceRows[idx] }
@@ -1054,6 +1095,8 @@ Panel {
         else if (t === "d") root.showDevices = !root.showDevices
         else if (t === "g") root.logExpanded = !root.logExpanded
         else if (t === "n") root.cycleRouter()
+        else if (t === "i") root.showInactiveRadios = !root.showInactiveRadios
+        else if (t === "b" && root.companionHints && root.routerHasTunnels) root.openBananet()
         else if (t === "e") root.setAllExpanded(true)
         else if (t === "w") root.setAllExpanded(false)
         else if (t === "1") root.chartRange = 3600
@@ -1171,6 +1214,38 @@ Panel {
             InfoLine { label: "Public"; value: root.publicLine; dimValue: !(root.cloud && root.cloud.publicIp) }
             InfoLine { label: "DNS"; value: root.dns && root.dns.length ? root.dns.join(", ") : (root.loaded ? "none configured" : "…") }
             InfoLine { visible: root.cloudLine !== ""; label: "Cloud"; value: root.cloudLine; dimValue: true }
+            // Sibling plugin hint: only when the router has tunnels, never nags otherwise.
+            Item {
+              visible: root.companionHints && root.routerHasTunnels && root.loaded
+              width: parent.width
+              implicitHeight: bananetHintText.implicitHeight + Style.space(6)
+              Rectangle {
+                anchors.fill: parent
+                radius: Style.cornerRadius
+                color: bananetHintMouse.containsMouse ? root.hoverFill : "transparent"
+              }
+              Text {
+                id: bananetHintText
+                textFormat: Text.PlainText
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.verticalCenter: parent.verticalCenter
+                leftPadding: Style.space(66)
+                rightPadding: Style.space(6)
+                text: "󰖂  " + root.bananetHint + (root.bananetInstalled ? "  (b)" : "")
+                color: bananetHintMouse.containsMouse ? root.foreground : root.accentColor
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+                wrapMode: Text.WordWrap
+              }
+              MouseArea {
+                id: bananetHintMouse
+                anchors.fill: parent
+                hoverEnabled: true
+                cursorShape: Qt.PointingHandCursor
+                onClicked: root.openBananet()
+              }
+            }
             Repeater {
               model: JSON.parse(root.wanHistoryJson)
               delegate: InfoLine {
@@ -1295,6 +1370,33 @@ Panel {
                 width: parent.width
                 iface: root.ifaceMap[modelData] || null
                 rowIndex: index
+              }
+            }
+
+            // Down radios with nobody on them and disabled interfaces: one line instead of a column of grey rows.
+            Item {
+              visible: root.inactiveRadios.length > 0
+              width: parent.width
+              implicitHeight: idleRadiosText.implicitHeight + Style.space(8)
+              Text {
+                id: idleRadiosText
+                textFormat: Text.PlainText
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.verticalCenter: parent.verticalCenter
+                leftPadding: Style.space(32)
+                text: (root.showInactiveRadios ? "󰅀  hide " : "󰅂  ") + root.plural(root.inactiveRadios.length, "interface", "interfaces") + " down or disabled: " + root.inactiveRadios.join(", ") + (root.showInactiveRadios ? "" : "  (i)")
+                color: idleRadiosMouse.containsMouse ? root.foreground : root.dim
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+                elide: Text.ElideRight
+              }
+              MouseArea {
+                id: idleRadiosMouse
+                anchors.fill: parent
+                hoverEnabled: true
+                cursorShape: Qt.PointingHandCursor
+                onClicked: root.showInactiveRadios = !root.showInactiveRadios
               }
             }
           }
@@ -1430,7 +1532,7 @@ Panel {
             Text {
               textFormat: Text.PlainText
               width: parent.width
-              text: "j/k move · enter/→ expand · 1-" + root.rangeOptions.length + " chart range · c copy · r refresh · d devices · g full log" + (root.routers.length > 1 ? " · n next router" : "") + " · e/w expand/collapse all · esc"
+              text: "j/k move · enter/→ expand · 1-" + root.rangeOptions.length + " chart range · c copy · r refresh · d devices · g full log" + (root.routers.length > 1 ? " · n next router" : "") + (root.inactiveRadios.length ? " · i idle interfaces" : "") + " · e/w expand/collapse all · esc"
               color: root.dimmer
               font.family: root.fontFamily
               font.pixelSize: Style.font.caption

@@ -1285,6 +1285,7 @@ def demo_output(now):
                       "peers": [{"iface": "wg-bth", "name": "phone", "endpoint": "198.51.100.23:41641", "allowed": "192.168.216.2/32", "lastHandshake": 42, "rx": 12_345_678, "tx": 98_765_432, "disabled": False, "responder": True, "isBth": True},
                                 {"iface": "wg-bth", "name": "laptop-away", "endpoint": "", "allowed": "192.168.216.3/32", "lastHandshake": 86_400 * 3, "rx": 0, "tx": 0, "disabled": False, "responder": True, "isBth": True}]},
         "sessions": [{"user": "admin", "group": "full", "via": "winbox", "address": "192.168.88.150", "when": "2026-09-14 13:19:48", "count": 2}],
+        "companions": {"bananet": False},
         "firewall": {"filter": 14, "nat": 3, "connections": 434},
         "log": [{"time": "2026-09-14 13:05:43", "topics": "dhcp,info", "message": "defconf assigned 192.168.88.171 for 02:11:22:33:44:07 new-tablet", "level": "info"},
                 {"time": "2026-09-14 13:07:51", "topics": "wireless,info", "message": "02:11:22:33:44:07@wifi1(Casa-2G) connected, signal strength -78", "level": "info"},
@@ -1517,9 +1518,13 @@ def main():
     for e in r.errors:
         warn(e)
 
+    # Sibling plugin present on this machine? (a plain stat, nothing is run)
+    bananet_manifest = os.path.join(os.environ.get("XDG_CONFIG_HOME", os.path.join(HOME, ".config")), "omarchy", "plugins", "banan.bananet", "manifest.json")
+    companions = {"bananet": os.path.isfile(bananet_manifest)}
+
     output = {
         "ts": now, "tookMs": int((time.time() - STARTED) * 1000), "version": VERSION, "host": creds["host"],
-        "routers": routers, "profile": router_info,
+        "routers": routers, "profile": router_info, "companions": companions,
         "router": router, "wan": wan, "cloud": cloud, "dns": dns_info["servers"], "dnsInfo": dns_info,
         "interfaces": interfaces, "wifi": wifi, "clients": clients,
         "clientsBound": sum(1 for c in clients if c["status"] == "bound"),
