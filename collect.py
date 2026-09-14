@@ -76,7 +76,15 @@ def clip(value, limit=MAX_STR):
 
 def bound(obj):
     """Final guard before the document is printed: no string longer than
-    MAX_STR, no list or object with more than MAX_LIST entries."""
+    MAX_STR, no list or object with more than MAX_LIST entries. The traffic
+    history is the one list allowed to be long (2880 rows for 24 h); it is
+    built here from our own file, bounded by HISTORY_MAX_LINES."""
+    if isinstance(obj, dict) and "history" in obj and isinstance(obj.get("history"), list):
+        history = [[float(e[0]), {str(k)[:64]: [int(v[0]), int(v[1])] for k, v in list(e[1].items())[:MAX_LIST]}] for e in obj["history"][-HISTORY_MAX_LINES:]
+                   if isinstance(e, list) and len(e) == 2 and isinstance(e[1], dict)]
+        rest = bound({k: v for k, v in obj.items() if k != "history"})
+        rest["history"] = history
+        return rest
     if isinstance(obj, str):
         return obj[:MAX_STR]
     if isinstance(obj, list):
@@ -1078,8 +1086,25 @@ def main():
     now = time.time()
     if OPTS["demo"]:
         doc = demo_output(now)
+        # Demo counters move with the clock so that rates and charts are not flat.
+        import math
+        tick = int(now / 30)
+        def demo_counter(base, per_sample, wobble, i):
+            return int(base + i * per_sample + wobble * (1 + math.sin(i / 37.0)) * (i % 7))
+        for iface in doc["interfaces"]:
+            b = iface["rx"]
+            iface["rx"] = demo_counter(b, 380_000, 260_000, tick)
+            iface["tx"] = demo_counter(iface["tx"], 120_000, 90_000, tick)
         if OPTS["history"]:
-            doc["history"] = [[now - 86400 + i * 30, {"pppoe-out1": [int(540e9 + i * 900_000 + (i % 60) * 400_000), int(457e9 + i * 250_000)], "bridge": [int(454e9 + i * 700_000), int(550e9 + i * 900_000)]}] for i in range(2880)]
+            doc["history"] = []
+            for j in range(2880):
+                i = tick - 2880 + j
+                row = {}
+                for iface in doc["interfaces"]:
+                    if iface["running"] and (not iface["slave"] or iface["kind"] == "wifi"):
+                        seed = (sum(ord(c) for c in iface["name"]) % 5) + 1
+                        row[iface["name"]] = [demo_counter(iface["rx"] - 2880 * 380_000, 380_000 // seed, 260_000 // seed, i), demo_counter(iface["tx"] - 2880 * 120_000, 120_000 // seed, 90_000 // seed, i)]
+                doc["history"].append([i * 30.0, row])
         json.dump(bound(doc), sys.stdout, ensure_ascii=False)
         sys.stdout.write("\n")
         return
