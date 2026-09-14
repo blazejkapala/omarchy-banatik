@@ -1086,25 +1086,40 @@ def main():
     now = time.time()
     if OPTS["demo"]:
         doc = demo_output(now)
-        # Demo counters move with the clock so that rates and charts are not flat.
+        # Demo counters follow an invented day: a slow wave with bursts, so that
+        # rates and charts look alive. Cumulative per interface, per 30 s step.
         import math
-        tick = int(now / 30)
-        def demo_counter(base, per_sample, wobble, i):
-            return int(base + i * per_sample + wobble * (1 + math.sin(i / 37.0)) * (i % 7))
-        for iface in doc["interfaces"]:
-            b = iface["rx"]
-            iface["rx"] = demo_counter(b, 380_000, 260_000, tick)
-            iface["tx"] = demo_counter(iface["tx"], 120_000, 90_000, tick)
+
+        def demo_rate(seed, i, down):
+            base = (1_200_000 if down else 350_000) / seed
+            wave = 0.25 + 0.75 * (0.5 + 0.5 * math.sin(i / 61.0 + seed))
+            burst = 3.0 if (i * 7 + seed * 13) % 97 < 6 else 1.0
+            jitter = 0.7 + 0.6 * ((i * 31 + seed * 7) % 11) / 10.0
+            return base * wave * burst * jitter
+
+        step_now = now / 30.0
+        first = int(step_now) - 2880
+        # Accumulate from a day boundary, not from the window start, so the
+        # counters only ever grow between two refreshes (rates stay positive).
+        origin = (int(step_now) // 2880 - 1) * 2880
+        charted = [f for f in doc["interfaces"] if f["running"] and (not f["slave"] or f["kind"] == "wifi")]
+        counters = {f["name"]: [f["rx"] - 5760 * 30 * 1_200_000, f["tx"] - 5760 * 30 * 350_000] for f in charted}
+        seeds = {f["name"]: (sum(ord(c) for c in f["name"]) % 5) + 1 for f in charted}
+        history = []
+        for i in range(origin, int(step_now) + 1):
+            for f in charted:
+                n = f["name"]
+                counters[n][0] += int(30 * demo_rate(seeds[n], i, True))
+                counters[n][1] += int(30 * demo_rate(seeds[n], i, False))
+            if first <= i < int(step_now):
+                history.append([i * 30.0, {n: [c[0], c[1]] for n, c in counters.items()}])
+        frac = step_now - int(step_now)
+        for f in charted:
+            n = f["name"]
+            f["rx"] = counters[n][0] + int(frac * 30 * demo_rate(seeds[n], int(step_now), True))
+            f["tx"] = counters[n][1] + int(frac * 30 * demo_rate(seeds[n], int(step_now), False))
         if OPTS["history"]:
-            doc["history"] = []
-            for j in range(2880):
-                i = tick - 2880 + j
-                row = {}
-                for iface in doc["interfaces"]:
-                    if iface["running"] and (not iface["slave"] or iface["kind"] == "wifi"):
-                        seed = (sum(ord(c) for c in iface["name"]) % 5) + 1
-                        row[iface["name"]] = [demo_counter(iface["rx"] - 2880 * 380_000, 380_000 // seed, 260_000 // seed, i), demo_counter(iface["tx"] - 2880 * 120_000, 120_000 // seed, 90_000 // seed, i)]
-                doc["history"].append([i * 30.0, row])
+            doc["history"] = history
         json.dump(bound(doc), sys.stdout, ensure_ascii=False)
         sys.stdout.write("\n")
         return

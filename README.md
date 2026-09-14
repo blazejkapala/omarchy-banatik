@@ -149,6 +149,8 @@ the IP, right click the MAC. `d` collapses the list.
 12 by default, `g` shows all), own REST logins filtered out, errors in red.
 Turn it off with `showLog` to save one request per refresh.
 
+![Devices and log](screenshots/panel-log.png)
+
 ## Alerts
 
 The collector remembers what it saw last time (`~/.cache/omarchy-banatik/state.json`,
