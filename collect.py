@@ -44,7 +44,7 @@ STATE_FILE = os.path.join(CACHE_DIR, "state.json")
 HISTORY_FILE = os.path.join(CACHE_DIR, "history.jsonl")   # pre-0.2 format, imported once into the database
 HISTORY_DB = "history.sqlite"
 
-VERSION = "0.2.0"
+VERSION = "0.2.1"
 MAX_STR = 300
 MAX_LIST = 400
 CACHE_MAX = 4 * 1024 * 1024

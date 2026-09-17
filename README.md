@@ -259,8 +259,7 @@ terminal.
   optional `PORT`. Must be a regular file owned by you with mode 0600; the
   collector refuses anything else.
 - `~/.cache/omarchy-banatik/` – `state.json` (what was seen last time, for
-  alerts) and `history.sqlite` (traffic history, one per router profile, no
-  SQLite side files). Private (0700), no credentials.
+  alerts) and `history.sqlite` (traffic history, no SQLite side files). Private (0700), no credentials.
 
 ## Manage
 
