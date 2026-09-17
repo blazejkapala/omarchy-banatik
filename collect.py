@@ -34,6 +34,7 @@ import stat
 import sys
 import tempfile
 import time
+import urllib.parse
 
 HOME = os.path.expanduser("~")
 CONFIG_DIR = os.path.join(os.environ.get("XDG_CONFIG_HOME", os.path.join(HOME, ".config")), "banatik")
@@ -847,28 +848,107 @@ def history_dir():
     return want
 
 
-def open_history():
-    directory = history_dir()
-    path = os.path.join(directory, HISTORY_DB)
+def open_private_dir(path):
+    """Descriptor for a directory that is ours, private (0700) and not a symlink.
+    The checks run on the descriptor, so they describe the directory that was
+    actually opened, not whatever the name points at a moment later."""
+    fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
     try:
-        st = os.lstat(path)
-        if not stat.S_ISREG(st.st_mode) or st.st_uid != os.getuid():
-            raise OSError("%s is not a regular file owned by this user" % path)
-    except FileNotFoundError:
-        pass
-    con = sqlite3.connect(path, timeout=2.0, isolation_level=None)
-    con.execute("PRAGMA journal_mode=TRUNCATE")
-    con.execute("PRAGMA synchronous=NORMAL")
-    con.execute("CREATE TABLE IF NOT EXISTS samples (ts REAL NOT NULL, iface TEXT NOT NULL, rx INTEGER NOT NULL, tx INTEGER NOT NULL, PRIMARY KEY (iface, ts))")
-    con.execute("CREATE INDEX IF NOT EXISTS samples_ts ON samples (ts)")
-    con.execute("CREATE TABLE IF NOT EXISTS agg (bucket INTEGER NOT NULL, iface TEXT NOT NULL, rx INTEGER NOT NULL, tx INTEGER NOT NULL, "
-                "rxpeak REAL NOT NULL, txpeak REAL NOT NULL, n INTEGER NOT NULL, PRIMARY KEY (iface, bucket))")
-    con.execute("CREATE INDEX IF NOT EXISTS agg_bucket ON agg (bucket)")
-    try:
-        os.chmod(path, 0o600)
+        st = os.fstat(fd)
+        if not stat.S_ISDIR(st.st_mode) or st.st_uid != os.getuid() or st.st_mode & 0o077:
+            raise OSError("%s must be a directory you own with mode 0700" % path)
     except OSError:
-        pass
-    return con
+        os.close(fd)
+        raise
+    return fd
+
+
+def descriptor_identities():
+    """{fd: (device, inode)} of every descriptor this process holds. The listing
+    itself briefly holds one descriptor; it is closed again by the time the
+    entries are examined, so it drops out instead of shadowing a real one."""
+    out = {}
+    for name in os.listdir("/proc/self/fd"):
+        try:
+            st = os.stat("/proc/self/fd/" + name)
+        except OSError:
+            continue
+        out[name] = (st.st_dev, st.st_ino, stat.S_ISREG(st.st_mode))
+    return out
+
+
+def drop_foreign_side_file(dfd, name):
+    """SQLite side files (-journal, -wal, -shm) next to the database. Anything
+    that is not a plain file of ours is removed without following it; an empty
+    journal left behind by the pre-0.2.1 TRUNCATE mode is removed too. A
+    non-empty regular journal is a real hot journal and stays for SQLite."""
+    try:
+        st = os.stat(name, dir_fd=dfd, follow_symlinks=False)
+    except FileNotFoundError:
+        return
+    plain = stat.S_ISREG(st.st_mode) and st.st_uid == os.getuid() and st.st_nlink == 1
+    if not plain or (name.endswith("-journal") and st.st_size == 0):
+        os.unlink(name, dir_fd=dfd)
+
+
+def open_history():
+    """Open history.sqlite so that every write lands in the file that was
+    verified, even if another process of this user swaps the name meanwhile.
+
+    1. The directory is opened with O_NOFOLLOW and checked on its descriptor.
+    2. The database file is created/opened relative to that descriptor with
+       O_NOFOLLOW and checked on its own descriptor: regular, ours, one link.
+    3. sqlite3.connect() opens the file immediately and runs no statement. The
+       descriptor it obtained is compared with the verified one by device and
+       inode before the first statement. A swap between step 2 and the open
+       (symlink, another file renamed into place) shows up as a different
+       inode; the connection is closed without a single write.
+    4. The rollback journal lives in memory and temp storage too, so SQLite
+       never opens a second pathname: no -journal/-wal/-shm file is created,
+       inside or outside the directory. The history is expendable, a crash
+       mid-commit costs at most a rebuild (see the malformed-database path).
+    """
+    directory = history_dir()
+    dfd = open_private_dir(directory)
+    try:
+        ffd = os.open(HISTORY_DB, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC, 0o600, dir_fd=dfd)
+        try:
+            st = os.fstat(ffd)
+            if not stat.S_ISREG(st.st_mode) or st.st_uid != os.getuid() or st.st_nlink != 1:
+                raise OSError("%s is not a private regular file owned by this user" % HISTORY_DB)
+            os.fchmod(ffd, 0o600)
+            for suffix in ("-journal", "-wal", "-shm"):
+                drop_foreign_side_file(dfd, HISTORY_DB + suffix)
+            before = descriptor_identities()
+            con = sqlite3.connect("file:%s?mode=rw" % urllib.parse.quote(os.path.join(directory, HISTORY_DB)),
+                                  uri=True, timeout=2.0, isolation_level=None)
+            try:
+                opened = [ident for fd, ident in descriptor_identities().items() if before.get(fd) != ident and ident[2]]
+                if not opened or any(ident[:2] != (st.st_dev, st.st_ino) for ident in opened):
+                    raise OSError("%s was replaced while it was being opened; nothing was written" % HISTORY_DB)
+                con.execute("PRAGMA journal_mode=MEMORY")
+                con.execute("PRAGMA temp_store=MEMORY")
+                con.execute("PRAGMA synchronous=NORMAL")
+                con.execute("CREATE TABLE IF NOT EXISTS samples (ts REAL NOT NULL, iface TEXT NOT NULL, rx INTEGER NOT NULL, tx INTEGER NOT NULL, PRIMARY KEY (iface, ts))")
+                con.execute("CREATE INDEX IF NOT EXISTS samples_ts ON samples (ts)")
+                con.execute("CREATE TABLE IF NOT EXISTS agg (bucket INTEGER NOT NULL, iface TEXT NOT NULL, rx INTEGER NOT NULL, tx INTEGER NOT NULL, "
+                            "rxpeak REAL NOT NULL, txpeak REAL NOT NULL, n INTEGER NOT NULL, PRIMARY KEY (iface, bucket))")
+                con.execute("CREATE INDEX IF NOT EXISTS agg_bucket ON agg (bucket)")
+            except sqlite3.DatabaseError as e:
+                # "file is not a database" / "malformed": set the verified file aside
+                # (by descriptor-relative rename, never by pathname) and start over next tick.
+                con.close()
+                if "malformed" in str(e) or "not a database" in str(e):
+                    os.rename(HISTORY_DB, HISTORY_DB + ".broken", src_dir_fd=dfd, dst_dir_fd=dfd)
+                raise
+            except BaseException:
+                con.close()
+                raise
+            return con
+        finally:
+            os.close(ffd)
+    finally:
+        os.close(dfd)
 
 
 def import_jsonl(con, now):

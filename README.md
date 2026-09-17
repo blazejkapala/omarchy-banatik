@@ -191,6 +191,23 @@ that you own, with mode 0700 and not a symlink; otherwise it warns in the panel
 and uses the cache directory. Pre-0.2 `history.jsonl` files are imported once
 and removed.
 
+Every write lands in the file that was verified, even if another process of
+yours swaps the name at the wrong moment. The directory is opened with
+`O_NOFOLLOW` and checked on its descriptor; the database is created or opened
+relative to that descriptor, again with `O_NOFOLLOW`, and must be a regular
+file of yours with a single link. `sqlite3.connect()` opens the file at once
+and runs nothing, so before the first statement the collector compares the
+descriptor SQLite obtained with the verified one by device and inode. A
+symlink or another file renamed into place in between shows up as a different
+inode: the connection is closed and nothing is written. The rollback journal
+and temporary storage live in memory, so SQLite never opens a second pathname
+and no `-journal`, `-wal` or `-shm` file exists, in this directory or anywhere
+else. The price is that a crash in the middle of a commit can damage the
+history; a database SQLite calls malformed is renamed to `*.broken` and a new
+one starts on the next refresh. `tests/test_history_open.py` covers this,
+including the swap between validation and open
+(`python3 -m unittest discover -s tests -v`).
+
 ## Keyboard and mouse
 
 | Key | Action |
@@ -242,8 +259,8 @@ terminal.
   optional `PORT`. Must be a regular file owned by you with mode 0600; the
   collector refuses anything else.
 - `~/.cache/omarchy-banatik/` – `state.json` (what was seen last time, for
-  alerts) and `history.sqlite` (traffic history). Private (0700), no
-  credentials.
+  alerts) and `history.sqlite` (traffic history, one per router profile, no
+  SQLite side files). Private (0700), no credentials.
 
 ## Manage
 
