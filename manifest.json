@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "banan.banatik",
   "name": "Banatik",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "author": "banan",
   "license": "MIT",
   "description": "Banatik — your MikroTik router in the Omarchy bar. WAN link and public IP, RouterOS version and pending firmware, CPU and memory, Wi-Fi clients with signal, DHCP devices, ZeroTier and WireGuard / Back To Home peers, logins, firewall counters, traffic charts up to 30 days and the router log, read over REST with a read-only user and a pinned certificate. Alerts when the internet link drops, the public IP changes, a new device joins or someone logs into the router.",
