@@ -254,6 +254,7 @@ including the swap between validation and open
 | `n` | next router (with several profiles) |
 | `i` | show / hide down radios without clients and disabled interfaces |
 | `b` | open Bananet (when the hint is shown) |
+| `t` | open / close the settings section (also available from the gear icon) |
 | `e` / `w` | expand / collapse all interfaces |
 | `esc` | close |
 
@@ -261,6 +262,8 @@ Mouse: click a row to expand or copy, right click copies the other thing (MAC
 for devices, first address for interfaces).
 
 ## Settings (`~/.config/omarchy/shell.json`, the `banan.banatik` entry)
+
+Click the gear in the panel header to change the main visibility and notification settings. Changes are saved in `shell.json`.
 
 | Key | Default | Meaning |
 |---|---|---|
@@ -278,6 +281,10 @@ for devices, first address for interfaces).
 | `historyDays` | 7 | days of 5-minute traffic history to keep (1–365) |
 | `historyDir` | `""` | directory for `history.sqlite`; empty = `~/.cache/omarchy-banatik` |
 | `companionHints` | true | when the router carries tunnels, show a line pointing to Bananet (opens it if installed, otherwise copies `omarchy plugin install banan.bananet`) |
+| `showInternetSection` | true | show WAN, public IP, DNS and alerts in the panel |
+| `showRouterSection` | true | show router health, firmware, firewall and logins |
+| `showInterfacesSection` | true | show interfaces and traffic charts |
+| `showDevicesSection` | true | show the devices section |
 | `demo` | false | invented router, for screenshots |
 
 `omarchy bar set banan.banatik showLabel true` changes a setting from the

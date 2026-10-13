@@ -33,6 +33,10 @@
       "historyDays": 7,
       "historyDir": "",
       "companionHints": true,
+      "showInternetSection": true,
+      "showRouterSection": true,
+      "showInterfacesSection": true,
+      "showDevicesSection": true,
       "demo": false
     },
     "schema": [
@@ -127,6 +131,30 @@
         "key": "companionHints",
         "type": "boolean",
         "label": "When the router carries tunnels, show a line pointing to Bananet (opens it if installed, otherwise copies the install command)",
+        "defaultValue": true
+      },
+      {
+        "key": "showInternetSection",
+        "type": "boolean",
+        "label": "Show the Internet section in the panel",
+        "defaultValue": true
+      },
+      {
+        "key": "showRouterSection",
+        "type": "boolean",
+        "label": "Show router health and status in the panel",
+        "defaultValue": true
+      },
+      {
+        "key": "showInterfacesSection",
+        "type": "boolean",
+        "label": "Show interfaces and traffic charts in the panel",
+        "defaultValue": true
+      },
+      {
+        "key": "showDevicesSection",
+        "type": "boolean",
+        "label": "Show devices in the panel",
         "defaultValue": true
       },
       {

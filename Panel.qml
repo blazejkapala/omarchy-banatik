@@ -78,6 +78,15 @@ Panel {
   readonly property bool notifyLogin: boolSetting("notifyLogin", true)
   readonly property int historyDays: intSetting("historyDays", 7, 1, 365)
   readonly property bool companionHints: boolSetting("companionHints", true)
+  readonly property bool showInternetSection: boolSetting("showInternetSection", true)
+  readonly property bool showRouterSection: boolSetting("showRouterSection", true)
+  readonly property bool showInterfacesSection: boolSetting("showInterfacesSection", true)
+  readonly property bool showDevicesSection: boolSetting("showDevicesSection", true)
+  property bool settingsOpen: false
+  readonly property string omarchyBin: "/usr/share/omarchy/bin/omarchy"
+  function setBooleanSetting(key, value) {
+    Quickshell.execDetached([omarchyBin, "bar", "set", moduleName, key, value ? "true" : "false", "--json"])
+  }
   readonly property string historyDir: String(setting("historyDir", "") || "")
 
   // ------------------------------------------------------------------- data
@@ -872,7 +881,7 @@ Panel {
   readonly property var ifaceRows: ifaceKeys.map(function(k) { return ifaceMap[k] }).filter(function(x) { return !!x })
   readonly property var clientRows: clientKeys.map(function(k) { return clientMap[k] }).filter(function(x) { return !!x })
   readonly property int deviceHeaderIndex: ifaceKeys.length
-  readonly property int rowCount: ifaceKeys.length + 1 + clientKeys.length
+  readonly property int rowCount: ifaceKeys.length + (showDevicesSection && showClients && router ? 1 + clientKeys.length : 0)
 
   function sameKeys(a, b) {
     if (a.length !== b.length) return false
@@ -899,7 +908,7 @@ Panel {
   function syncRows() {
     var list = snap && snap.interfaces ? snap.interfaces : []
     var shown = []
-    for (var i = 0; i < list.length; i++) if (ifaceShown(list[i])) shown.push(list[i])
+    if (showInterfacesSection) for (var i = 0; i < list.length; i++) if (ifaceShown(list[i])) shown.push(list[i])
     shown.sort(function(a, b) { var d = ifaceOrder(a) - ifaceOrder(b); return d !== 0 ? d : (a.name < b.name ? -1 : (a.name > b.name ? 1 : 0)) })
     var im = {}, ik = []
     for (var s = 0; s < shown.length; s++) { im[shown[s].name] = shown[s]; ik.push(shown[s].name) }
@@ -907,7 +916,7 @@ Panel {
     if (!sameKeys(ik, ifaceKeys)) ifaceKeys = ik
 
     var cm = {}, ck = []
-    if (showDevices) {
+    if (showDevices && showDevicesSection && showClients) {
       var cl = (clients || []).slice()
       cl.sort(function(a, b) {
         var ab = a.status === "bound" ? 0 : 1, bb = b.status === "bound" ? 0 : 1
@@ -934,11 +943,15 @@ Panel {
   }
   onShowDevicesChanged: syncRows()
   onShowInactiveRadiosChanged: syncRows()
+  onShowInterfacesSectionChanged: syncRows()
+  onShowDevicesSectionChanged: syncRows()
+  onShowClientsChanged: syncRows()
 
   function rowAt(idx) {
     if (idx < ifaceRows.length) return { section: "iface", item: ifaceRows[idx] }
     idx -= ifaceRows.length
-    if (idx === 0) return { section: "deviceHeader", item: null }
+    if (showDevicesSection && showClients && router && idx === 0) return { section: "deviceHeader", item: null }
+    if (!(showDevicesSection && showClients && router)) return { section: "", item: null }
     idx -= 1
     if (idx < clientRows.length) return { section: "client", item: clientRows[idx] }
     return { section: "", item: null }
@@ -1095,6 +1108,7 @@ Panel {
       onTabRequested: function(direction) { root.switchPanel(direction) }
       onTextKey: function(t) {
         if (t === "r") root.refresh()
+        else if (t === "t") root.settingsOpen = !root.settingsOpen
         else if (t === "c") root.copyCursor()
         else if (t === "d") root.showDevices = !root.showDevices
         else if (t === "g") root.logExpanded = !root.logExpanded
@@ -1128,6 +1142,21 @@ Panel {
           spacing: Style.space(10)
 
           PanelHero {
+            trailingControl: Component {
+              Item {
+                implicitWidth: Style.space(32)
+                implicitHeight: Style.space(32)
+                Text { anchors.centerIn: parent; text: "⚙"; color: root.foreground; font.pixelSize: Style.font.title }
+                MouseArea {
+                  id: settingsButton
+                  anchors.fill: parent
+                  hoverEnabled: true
+                  cursorShape: Qt.PointingHandCursor
+                  onClicked: root.settingsOpen = !root.settingsOpen
+                }
+                PanelToolTip { visible: settingsButton.containsMouse; text: "Settings (t)"; fontFamily: root.fontFamily }
+              }
+            }
             iconComponent: Component {
               Item {
                 implicitWidth: Style.space(30)
@@ -1144,6 +1173,25 @@ Panel {
             detail: root.routerDetail
             foreground: root.foreground
             fontFamily: root.fontFamily
+          }
+
+          Column {
+            visible: root.settingsOpen
+            width: parent.width
+            spacing: Style.space(6)
+            PanelSeparator { foreground: root.foreground }
+            PanelSectionHeader { text: "Settings"; foreground: root.foreground; fontFamily: root.fontFamily }
+            SettingsRow { settingKey: "showInternetSection"; label: "Internet section" }
+            SettingsRow { settingKey: "showRouterSection"; label: "Router section" }
+            SettingsRow { settingKey: "showInterfacesSection"; label: "Interfaces and charts" }
+            SettingsRow { settingKey: "showDevicesSection"; label: "Devices section" }
+            SettingsRow { settingKey: "showLog"; label: "Router log" }
+            SettingsRow { settingKey: "companionHints"; label: "Bananet hint" }
+            SettingsRow { settingKey: "showLabel"; label: "Label in the bar"; defaultValue: false }
+            SettingsRow { settingKey: "showTooltip"; label: "Bar tooltip"; defaultValue: false }
+            SettingsRow { settingKey: "notifyWan"; label: "WAN notifications" }
+            SettingsRow { settingKey: "notifyNewClient"; label: "New device notifications" }
+            SettingsRow { settingKey: "notifyLogin"; label: "Login notifications" }
           }
 
           // ---------- Router picker (only with several profiles) ----------
@@ -1206,7 +1254,7 @@ Panel {
 
           // ---------- Internet ----------
           Column {
-            visible: !root.setup
+            visible: !root.setup && root.showInternetSection
             width: parent.width
             spacing: Style.space(4)
 
@@ -1275,7 +1323,7 @@ Panel {
 
           // ---------- Router ----------
           Column {
-            visible: !!root.router
+            visible: !!root.router && root.showRouterSection
             width: parent.width
             spacing: Style.space(4)
 
@@ -1338,7 +1386,7 @@ Panel {
 
           // ---------- Interfaces ----------
           Column {
-            visible: !!root.router
+            visible: !!root.router && root.showInterfacesSection
             width: parent.width
             spacing: Style.space(2)
 
@@ -1407,7 +1455,7 @@ Panel {
 
           // ---------- Devices ----------
           Column {
-            visible: !!root.router && root.showClients
+            visible: !!root.router && root.showClients && root.showDevicesSection
             width: parent.width
             spacing: Style.space(2)
 
@@ -1536,7 +1584,7 @@ Panel {
             Text {
               textFormat: Text.PlainText
               width: parent.width
-              text: "j/k move · enter/→ expand · 1-" + root.rangeOptions.length + " chart range · c copy · r refresh · d devices · g full log" + (root.routers.length > 1 ? " · n next router" : "") + (root.inactiveRadios.length ? " · i idle interfaces" : "") + " · e/w expand/collapse all · esc"
+              text: "j/k move · enter/→ expand · 1-" + root.rangeOptions.length + " chart range · c copy · r refresh · t settings · d devices · g full log" + (root.routers.length > 1 ? " · n next router" : "") + (root.inactiveRadios.length ? " · i idle interfaces" : "") + " · e/w expand/collapse all · esc"
               color: root.dimmer
               font.family: root.fontFamily
               font.pixelSize: Style.font.caption
@@ -1558,6 +1606,31 @@ Panel {
   }
 
   // ------------------------------------------------------------- components
+  component SettingsRow: Row {
+    id: settingRow
+    property string settingKey: ""
+    property string label: ""
+    property bool defaultValue: true
+    width: parent ? parent.width : implicitWidth
+    spacing: Style.space(12)
+    Text {
+      textFormat: Text.PlainText
+      width: settingRow.width - settingSwitch.implicitWidth - settingRow.spacing
+      text: settingRow.label
+      color: root.foreground
+      font.family: root.fontFamily
+      font.pixelSize: Style.font.bodySmall
+      height: settingSwitch.implicitHeight
+      verticalAlignment: Text.AlignVCenter
+      MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: root.setBooleanSetting(settingRow.settingKey, !settingSwitch.checked) }
+    }
+    ToggleSwitch {
+      id: settingSwitch
+      checked: root.boolSetting(settingRow.settingKey, settingRow.defaultValue)
+      foreground: root.foreground
+      onToggled: root.setBooleanSetting(settingRow.settingKey, !checked)
+    }
+  }
   component InfoLine: Row {
     property string label: ""
     property string value: ""
